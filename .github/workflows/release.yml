@@ -1,8 +1,8 @@
 name: Release
 
-# Push a v<semver> tag (e.g. v0.1.0) to test, pack that version and push it to nuget.org.
-# Uses nuget.org trusted publishing: a policy on nuget.org for this repo and workflow file, and
-# the repo variable NUGET_USER (the nuget.org account that owns the policy). No API key secret.
+# Push a v<semver> tag (e.g. v0.1.0) to test, pack that version and push it to this owner's
+# GitHub Packages NuGet feed (https://nuget.pkg.github.com/Cellar-Mander/index.json), with
+# github.token: no secrets.
 on:
   push:
     tags: [ 'v*' ]
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write  # creates the GitHub release
-      id-token: write  # nuget.org trusted publishing
+      packages: write  # pushes to GitHub Packages
 
     steps:
     - name: Checkout
@@ -45,16 +45,13 @@ jobs:
           { echo "::error::$TAG isn't v<semver>"; exit 1; }
         dotnet pack Buildingway.Tools -c Release --nologo -o pack -p:Version="$version"
 
-    - name: Log in to nuget.org
-      id: login
-      uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
-      with:
-        user: ${{ vars.NUGET_USER }}
-
-    - name: Push to nuget.org
+    # The package links to this repo through the csproj's RepositoryUrl
+    - name: Push to GitHub Packages
       env:
-        NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
-      run: dotnet nuget push pack/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json
+        GH_TOKEN: ${{ github.token }}
+      run: >-
+        dotnet nuget push pack/*.nupkg --api-key "$GH_TOKEN"
+        --source "https://nuget.pkg.github.com/$GITHUB_REPOSITORY_OWNER/index.json"
 
     - name: GitHub release
       env:

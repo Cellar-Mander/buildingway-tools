@@ -17,27 +17,63 @@ name, so nothing in the tool is specific to one plugin.
 
 ## Using it in a plugin repo
 
-Add it to the repo's tool manifest at `.config/dotnet-tools.json`, where Dependabot's `nuget`
-updater looks for tools to update:
+The package is on this owner's GitHub Packages feed. GitHub asks for a token to read NuGet
+packages, even public ones, so a plugin repo needs three things.
 
-```json
-{
-  "version": 1,
-  "isRoot": true,
-  "tools": {
-    "buildingway.tools": {
-      "version": "0.1.0",
-      "commands": [ "buildingway" ],
-      "rollForward": false
-    }
-  }
-}
-```
+1. A `nuget.config` at the root that adds the feed for `Buildingway.*` only, so every other
+   package still comes from nuget.org and a restore without a token only fails for this tool:
+
+   ```xml
+   <?xml version="1.0" encoding="utf-8"?>
+   <configuration>
+     <packageSources>
+       <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+       <add key="buildingway" value="https://nuget.pkg.github.com/Cellar-Mander/index.json" />
+     </packageSources>
+     <packageSourceMapping>
+       <packageSource key="nuget.org">
+         <package pattern="*" />
+       </packageSource>
+       <packageSource key="buildingway">
+         <package pattern="Buildingway.*" />
+       </packageSource>
+     </packageSourceMapping>
+   </configuration>
+   ```
+
+2. The tool in `.config/dotnet-tools.json`, where Dependabot's `nuget` updater looks for tools:
+
+   ```json
+   {
+     "version": 1,
+     "isRoot": true,
+     "tools": {
+       "buildingway.tools": {
+         "version": "0.1.0",
+         "commands": [ "buildingway" ],
+         "rollForward": false
+       }
+     }
+   }
+   ```
+
+3. A token with `read:packages` for the `buildingway` source, passed in an environment
+   variable so it never lands in a file:
+
+   ```bash
+   gh auth refresh -s read:packages   # once
+   export NuGetPackageSourceCredentials_buildingway="Username=token;Password=$(gh auth token)"
+   dotnet tool restore
+   ```
+
+   In GitHub Actions, give the job `packages: read` and set the same variable from
+   `github.token`; buildingway-ci's workflows do this. Dependabot has no `github.token`: add a
+   `nuget-feed` registry for the feed to `.github/dependabot.yml` with a Dependabot secret
+   holding a token with `read:packages`.
 
 Then, from anywhere in the checkout:
 
 ```bash
-dotnet tool restore
 dotnet buildingway dev-plugin deploy 1a2b3c4d
 ```
 
@@ -65,5 +101,5 @@ them there and copy them over. They run with `python3` (`python` on Windows); se
 
 ## Releasing this tool
 
-Push a tag `v<semver>` (e.g. `v0.1.0`); the Release workflow tests, packs that version and pushes
-it to nuget.org.
+Push a tag `v<semver>` (e.g. `v0.1.0`); the Release workflow tests, packs that version, pushes
+it to GitHub Packages with `github.token` and attaches the `.nupkg` to a GitHub release.
