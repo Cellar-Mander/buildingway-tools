@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <None Include="Fixtures\*.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\setup-repo\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

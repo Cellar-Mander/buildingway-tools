@@ -1,0 +1,94 @@
+[
+  [
+    {
+      "name": ".NET",
+      "color": "7121c6",
+      "description": "Pull requests that update .NET code",
+      "default": false
+    },
+    {
+      "name": "accessibility",
+      "color": "f143ab",
+      "description": "Barrier affecting people with disabilities",
+      "default": true
+    },
+    {
+      "name": "bug",
+      "color": "d73a4a",
+      "description": "Something isn't working",
+      "default": true
+    },
+    {
+      "name": "dependencies",
+      "color": "0366d6",
+      "description": "Pull requests that update a dependency file",
+      "default": false
+    },
+    {
+      "name": "documentation",
+      "color": "0075ca",
+      "description": "Improvements or additions to documentation",
+      "default": true
+    },
+    {
+      "name": "duplicate",
+      "color": "cfd3d7",
+      "description": "This issue or pull request already exists",
+      "default": true
+    },
+    {
+      "name": "enhancement",
+      "color": "a2eeef",
+      "description": "New feature or request",
+      "default": true
+    },
+    {
+      "name": "github_actions",
+      "color": "000000",
+      "description": "Pull requests that update GitHub Actions code",
+      "default": false
+    },
+    {
+      "name": "good first issue",
+      "color": "7057ff",
+      "description": "Good for newcomers",
+      "default": true
+    },
+    {
+      "name": "help wanted",
+      "color": "008672",
+      "description": "Extra attention is needed",
+      "default": true
+    },
+    {
+      "name": "invalid",
+      "color": "e4e669",
+      "description": "This doesn't seem right",
+      "default": true
+    },
+    {
+      "name": "mutation",
+      "color": "5319e7",
+      "description": "Run Stryker.NET mutation testing on this PR (advisory)",
+      "default": false
+    },
+    {
+      "name": "no-changelog",
+      "color": "ededed",
+      "description": "Plugin code change users won't notice; skips the Changelog check",
+      "default": false
+    },
+    {
+      "name": "question",
+      "color": "d876e3",
+      "description": "Further information is requested",
+      "default": true
+    },
+    {
+      "name": "wontfix",
+      "color": "ffffff",
+      "description": "This will not be worked on",
+      "default": true
+    }
+  ]
+]
