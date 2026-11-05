@@ -66,10 +66,10 @@ packages, even public ones, so a plugin repo needs three things.
    dotnet tool restore
    ```
 
-   In GitHub Actions, give the job `packages: read` and set the same variable from
-   `github.token`; buildingway-ci's workflows do this. Dependabot has no `github.token`: add a
-   `nuget-feed` registry for the feed to `.github/dependabot.yml` with a Dependabot secret
-   holding a token with `read:packages`.
+   For GitHub Actions and Dependabot, give the plugin repo Read access in the package's
+   settings, under "Manage Actions access". Then a job with `packages: read` sets the same
+   variable from `github.token` (buildingway-ci's workflows do), and Dependabot authenticates on
+   its own: no token secret or `registries:` entry.
 
 Then, from anywhere in the checkout:
 
