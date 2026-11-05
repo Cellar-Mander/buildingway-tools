@@ -14,6 +14,7 @@ name, so nothing in the tool is specific to one plugin.
 | `release verify <version>[-rc<n>]` | Checks the tag, GitHub release, zip manifest and live `repo.json` |
 | `revert-check` | Do the branch's new or changed tests fail with its product changes reverted? (needs `python3`) |
 | `mutant-triage` | Works through a Stryker run's surviving mutants (needs `python3`) |
+| `setup-repo [--check]` | Sets the repo's ruleset, merge settings, Actions permissions and labels, and writes local dev files (needs `gh`) |
 
 ## Using it in a plugin repo
 
@@ -91,6 +92,21 @@ overwrite a build under test. The claim is a `.claim` folder there (created atom
 csproj, a Keep a Changelog `CHANGELOG.md` with `## Unreleased`, `repo.json` on main, and
 optionally `.github/dalamud.env` (`prepare` warns when the local Dalamud is past its pin). It
 needs `git` and `gh`. `prepare` builds the one `.slnx` or `.sln` at the root and runs its tests.
+
+### Repo setup
+
+`setup-repo` brings a plugin repo to the shared standard, changing only what differs, so re-run
+it after updating the tool to carry a changed standard to existing repos. `--check` only reports,
+and exits 1 if anything would change. It needs `gh` logged in with admin rights on the repo, and
+takes the repo and name from the csproj (`--repo owner/name` and `--name` for a repo without one
+yet).
+
+- GitHub: the "Protect Main" ruleset on `main` (PRs only, no deletion or force push, buildingway-ci's
+  checks required), merge settings, a read-only Actions token that may open PRs (for the release's
+  `repo.json` PR), and the `no-changelog` and `mutation` labels the shared workflows read. Settings
+  that differ are overwritten.
+- Local, kept off the remote through `.git/info/exclude`: `.claude/checks` and `.worktreeinclude`,
+  created when missing and only reported when they differ.
 
 ### Python tools
 

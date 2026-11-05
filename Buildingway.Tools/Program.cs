@@ -12,6 +12,7 @@ internal static class Program
           release        prepare, publish and verify plugin releases
           revert-check   do the branch's new or changed tests fail with its product changes reverted?
           mutant-triage  work through a mutation run's surviving mutants
+          setup-repo     set the repo's GitHub ruleset, merge settings and labels, and write local dev files
 
         Run a command without arguments, or revert-check and mutant-triage with --help, for its usage.
         The plugin is the project in a top-level folder whose csproj uses Dalamud.NET.Sdk.
@@ -29,6 +30,7 @@ internal static class Program
                 ["release", .. var rest] => Release.Run(rest),
                 ["revert-check", .. var rest] => Python.Run("revert-check", rest),
                 ["mutant-triage", .. var rest] => Python.Run("mutant-triage", rest),
+                ["setup-repo", .. var rest] => SetupRepo.Run(rest),
                 ["--version"] => PrintVersion(),
                 _ => PrintUsage(),
             };

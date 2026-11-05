@@ -1,0 +1,9 @@
+[
+  {
+    "id": 26000382,
+    "name": "Protect Main",
+    "target": "branch",
+    "source_type": "Repository",
+    "enforcement": "active"
+  }
+]
