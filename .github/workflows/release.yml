@@ -45,13 +45,13 @@ jobs:
           { echo "::error::$TAG isn't v<semver>"; exit 1; }
         dotnet pack Buildingway.Tools -c Release --nologo -o pack -p:Version="$version"
 
-    # The package links to this repo through the csproj's RepositoryUrl
+    # The package links to this repo through the csproj's RepositoryUrl. GitHub Packages has no
+    # trusted publishing; github.token is its short-lived equivalent.
     - name: Push to GitHub Packages
       env:
         GH_TOKEN: ${{ github.token }}
-      run: >-
-        dotnet nuget push pack/*.nupkg --api-key "$GH_TOKEN"
-        --source "https://nuget.pkg.github.com/$GITHUB_REPOSITORY_OWNER/index.json"
+        FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+      run: dotnet nuget push pack/*.nupkg --api-key "$GH_TOKEN" --source "$FEED" # zizmor: ignore[use-trusted-publishing]
 
     - name: GitHub release
       env:
