@@ -1,0 +1,3 @@
+Copies of ~/Repo/ebd/bin (Cellar-Mander/ebd); update them from there, not here.
+revert-check   ebd 5b505d3
+mutant-triage  ebd bfd6297

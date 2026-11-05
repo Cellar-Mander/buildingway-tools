@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Buildingway.Tools.Tests/Buildingway.Tools.Tests.csproj" />
+  <Project Path="Buildingway.Tools/Buildingway.Tools.csproj" />
+</Solution>

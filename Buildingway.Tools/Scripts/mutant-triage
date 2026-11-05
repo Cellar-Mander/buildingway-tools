@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""mutant-triage: work through a mutation run's surviving mutants and record what became of each.
+
+    mutant-triage list [REPORT] [--all] [--context N]   survivors and uncovered mutants
+    mutant-triage diff BEFORE AFTER                     what changed between two runs; flags
+                                                        caught mutants that a suppression now hides
+    mutant-triage run NAME                              full run (mutation_run=), kept as NAME
+    mutant-triage snapshot NAME [REPORT]                keep the newest (or given) report as NAME
+    mutant-triage rerun FILE[:LINE]                     run one file's mutants (mutation_rerun=)
+    mutant-triage record KEY... OUTCOME [--note TEXT]   killed, suppressed, follow-up or spec
+    mutant-triage summary BEFORE AFTER                  every survivor's outcome, as Markdown
+
+Reads the mutation-testing-elements JSON report that Stryker (.NET, JS, Scala) writes. REPORT,
+BEFORE and AFTER are a path or a NAME kept by run/snapshot; without one, the newest report
+matching mutation_report= is used. Mutants are matched across runs by file, mutator, original
+text and replacement (whitespace and whole-line // comments ignored), not by line, so adding a
+suppression comment or a test doesn't break the match. KEY is a short hash of that identity.
+
+Outcomes and kept reports live in the git directory (per worktree, never committed), or in
+$MUTANT_TRIAGE_DIR.
+
+Per-project settings in .claude/checks (key=value):
+  mutation_run=CMD     full mutation run that writes a JSON report
+  mutation_rerun=CMD   one file's mutants; {file} (repo-relative path), {name} (file name) and
+                       {line} are filled in, e.g.
+                       cd Core.Tests && dotnet stryker --mutate "**/{name}" --reporter json
+  mutation_report=GLOBS  where reports land (default: Stryker .NET, JS and Scala layouts)
+  spec=PATH            the spec or design doc that triage checks behaviour against
+"""
+
+import argparse
+import glob
+import hashlib
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+
+DEFAULT_REPORTS = ["**/StrykerOutput/*/reports/mutation-report.json", "reports/mutation/mutation.json",
+                   "target/stryker4s-report/*/report.json"]
+OPEN = ("Survived", "NoCoverage")
+CAUGHT = ("Killed", "Timeout")
+# Ignored by Stryker itself rather than by a comment or config the author wrote.
+TOOL_FILTER = re.compile(r"^Removed by .* filter$")
+# Not mutated in this run at all (a --mutate or --since run): leave these out of comparisons.
+OUT_OF_SCOPE = re.compile(r"mutate filter|since filter|not changed", re.IGNORECASE)
+OUTCOMES = ("killed", "suppressed", "follow-up", "spec")
+WHOLE_LINE_COMMENT = re.compile(r"^\s*//.*$", re.MULTILINE)
+SAFE_PATH = re.compile(r"^[\w./@+-]+$")
+
+
+def norm(text):
+    return " ".join(WHOLE_LINE_COMMENT.sub("", text).split())
+
+
+@dataclass
+class Mutant:
+    key: str
+    file: str  # relative to the report's project root
+    line: int
+    col: int
+    mutator: str
+    original: str  # source text the mutant replaces
+    replacement: str
+    status: str
+    reason: str
+    killed_by: list
+
+    @property
+    def where(self):
+        return f"{self.file}:{self.line}:{self.col}"
+
+    def shown(self, text, width=70):
+        one = " ".join(text.split())
+        return one if len(one) <= width else one[:width - 1] + "…"
+
+    def ignored_by_author(self):
+        return self.status == "Ignored" and not TOOL_FILTER.match(self.reason)
+
+    def out_of_scope(self):
+        return self.status == "Ignored" and bool(OUT_OF_SCOPE.search(self.reason))
+
+
+def offsets(source):
+    starts, pos = [0], 0
+    for line in source.splitlines(keepends=True):
+        pos += len(line)
+        starts.append(pos)
+    return starts
+
+
+def load(path):
+    """Mutants in a report, keyed by identity (duplicates of one identity get an occurrence index), the report,
+    and the files this run mutated (a --mutate or --since run leaves the others out)."""
+    with open(path, encoding="utf-8") as f:
+        report = json.load(f)
+    root = report.get("projectRoot") or ""
+    tests = {t["id"]: t.get("name", t["id"]) for tf in (report.get("testFiles") or {}).values()
+             for t in tf.get("tests", [])}
+    mutants, seen, files = {}, {}, set()
+    for path_, entry in sorted(report.get("files", {}).items()):
+        rel = os.path.relpath(path_, root) if root and os.path.isabs(path_) else path_
+        src = entry.get("source", "")
+        starts = offsets(src)
+        scoped = False
+        for m in sorted(entry.get("mutants", []), key=lambda m: (m["location"]["start"]["line"],
+                                                                m["location"]["start"]["column"])):
+            s, e = m["location"]["start"], m["location"]["end"]
+            original = src[at(src, starts, s):at(src, starts, e)]
+            ident = (rel, m["mutatorName"], norm(original), norm(m.get("replacement", "")))
+            n = seen.get(ident, 0)
+            seen[ident] = n + 1
+            key = hashlib.sha1(json.dumps([*ident, n]).encode()).hexdigest()[:8]
+            mutants[key] = Mutant(key, rel, s["line"], s["column"], m["mutatorName"], original,
+                                  m.get("replacement", ""), m["status"], m.get("statusReason") or "",
+                                  [tests.get(t, t) for t in m.get("killedBy") or []])
+            scoped = scoped or not mutants[key].out_of_scope()
+        if scoped or not entry.get("mutants"):
+            files.add(rel)
+    return mutants, report, files
+
+
+def at(src, starts, pos):
+    """Offset in src of a 1-based line and column."""
+    line = min(pos["line"], len(starts) - 1)
+    return min(starts[line - 1] + pos["column"] - 1, len(src))
+
+
+def git(*args):
+    r = subprocess.run(["git", *args], check=False, capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def repo_root():
+    return git("rev-parse", "--show-toplevel") or os.getcwd()
+
+
+def config(root):
+    cfg = {}
+    try:
+        with open(os.path.join(root, ".claude", "checks"), encoding="utf-8") as f:
+            for line in f:
+                k, sep, v = line.partition("=")
+                if sep and k.strip() and not k.lstrip().startswith("#"):
+                    cfg.setdefault(k.strip(), v.strip())
+    except FileNotFoundError:
+        pass
+    return cfg
+
+
+def state_dir():
+    d = os.environ.get("MUTANT_TRIAGE_DIR")
+    if not d:
+        gd = git("rev-parse", "--absolute-git-dir")
+        d = os.path.join(gd, "mutant-triage") if gd else os.path.join(os.getcwd(), ".mutant-triage")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def newest_report(root, cfg, since=0.0):
+    found = []
+    for g in cfg.get("mutation_report", "").split() or DEFAULT_REPORTS:
+        found += glob.glob(os.path.join(root, g), recursive=True)
+    found = [f for f in found if os.path.getmtime(f) >= since]
+    return max(found, key=os.path.getmtime) if found else None
+
+
+def resolve(arg, root, cfg):
+    if arg:
+        kept = os.path.join(state_dir(), f"{arg}.json")
+        if os.path.exists(kept) and not os.path.exists(arg):
+            return kept
+        if os.path.exists(arg):
+            return arg
+        sys.exit(f"mutant-triage: no report at {arg!r} and no kept report named {arg!r}")
+    path = newest_report(root, cfg)
+    if not path:
+        sys.exit("mutant-triage: no report found; pass a path, or set mutation_report= in .claude/checks "
+                 "(Stryker needs the json reporter)")
+    return path
+
+
+def outcomes():
+    path = os.path.join(state_dir(), "outcomes.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def save_outcomes(data):
+    path = os.path.join(state_dir(), "outcomes.json")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1, sort_keys=True)
+    os.replace(path + ".tmp", path)
+
+
+def describe(m):
+    return f"{m.mutator}: {m.shown(m.original)!r} -> {m.shown(m.replacement)!r}"
+
+
+def context(m, report, n):
+    for path_, entry in report["files"].items():
+        root = report.get("projectRoot") or ""
+        if (os.path.relpath(path_, root) if root and os.path.isabs(path_) else path_) == m.file:
+            lines = entry.get("source", "").splitlines()
+            lo, hi = max(1, m.line - n), min(len(lines), m.line + n)
+            return [f"      {'>' if i == m.line else ' '}{i:5} {lines[i - 1]}" for i in range(lo, hi + 1)]
+    return []
+
+
+def cmd_list(a, root, cfg):
+    path = resolve(a.report, root, cfg)
+    mutants, report, _ = load(path)
+    done = outcomes()
+    shown = [m for m in mutants.values() if m.status in OPEN and (a.all or m.key not in done)]
+    shown.sort(key=lambda m: (m.file, m.line, m.col))
+    print(f"{path}: {sum(m.status == 'Survived' for m in mutants.values())} survived, "
+          f"{sum(m.status == 'NoCoverage' for m in mutants.values())} no coverage"
+          + (f", {len(shown)} without a recorded outcome" if not a.all else ""))
+    for m in shown:
+        tag = "survived" if m.status == "Survived" else "NO COVERAGE"
+        rec = done.get(m.key)
+        print(f"{m.key}  {m.where}  {tag}  {describe(m)}" + (f"  [{rec['outcome']}: {rec['note']}]" if rec else ""))
+        if a.context:
+            print("\n".join(context(m, report, a.context)))
+    if cfg.get("spec"):
+        print(f"Spec to check behaviour against: {cfg['spec']}")
+    return 0
+
+
+def compare(old, new):
+    """Pairs (key, before mutant or None, after mutant or None) over files mutated in both runs."""
+    (before, _, bfiles), (after, _, afiles) = old, new
+    files = bfiles & afiles
+    for key in sorted(set(before) | set(after)):
+        b, n = before.get(key), after.get(key)
+        if (b or n).file not in files:
+            continue
+        yield key, b, n
+
+
+def cmd_diff(a, root, cfg):
+    old, new = load(resolve(a.before, root, cfg)), load(resolve(a.after, root, cfg))
+    done = outcomes()
+    groups = {k: [] for k in ("hidden", "regressed", "killed", "suppressed", "gone", "new_open")}
+    for key, b, n in compare(old, new):
+        if b and n:
+            if b.status in CAUGHT and n.ignored_by_author():
+                groups["hidden"].append((n, done.get(key)))
+            elif (b.status in CAUGHT or b.ignored_by_author()) and n.status in OPEN:
+                groups["regressed"].append((n, None))
+            elif b.status in OPEN and n.status in CAUGHT:
+                groups["killed"].append((n, None))
+            elif b.status in OPEN and n.ignored_by_author():
+                groups["suppressed"].append((n, None))
+        elif b and b.status in OPEN:
+            groups["gone"].append((b, None))
+        elif n and n.status in OPEN:
+            groups["new_open"].append((n, None))
+    unconfirmed = [m for m, rec in groups["hidden"] if not (rec and rec["outcome"] == "suppressed")]
+    labels = [
+        ("hidden", "CAUGHT BEFORE, NOW IGNORED"),
+        ("regressed", "CAUGHT OR SUPPRESSED BEFORE, NOW SURVIVING OR UNCOVERED"),
+        ("killed", "Survivor now killed"),
+        ("suppressed", "Survivor now ignored (check each reason)"),
+        ("gone", "Survivor no longer mutated (its code changed)"),
+        ("new_open", "New survivor or uncovered mutant"),
+    ]
+    for g, label in labels:
+        if groups[g]:
+            print(f"{label}: {len(groups[g])}")
+            for m, rec in groups[g]:
+                extra = f"  ({m.reason})" if g in ("hidden", "suppressed") and m.reason else ""
+                if g == "killed" and m.killed_by:
+                    extra = f"  by {short_test(m.killed_by[0])}"
+                ok = "  [confirmed]" if rec and rec["outcome"] == "suppressed" else ""
+                print(f"  {m.key}  {m.where}  {describe(m)}{extra}{ok}")
+    if unconfirmed:
+        print("A suppression above covers mutants the tests caught. Narrow it (put the comment on its own line just "
+              "before the condition), or, for that condition's own mutants, confirm each with "
+              "`mutant-triage record KEY suppressed --note <why>`.")
+    if not any(groups.values()):
+        print("No survivor, uncovered or caught mutant changed status.")
+    return 1 if unconfirmed or groups["regressed"] else 0
+
+
+def short_test(name):
+    """Class.Method from a qualified test name, without theory arguments."""
+    return ".".join(name.split("(")[0].split(".")[-2:])
+
+
+def run(cmd, root):
+    print(f"mutant-triage: running {cmd}", file=sys.stderr)
+    return subprocess.run(["bash", "-c", cmd], cwd=root, check=False).returncode
+
+
+def keep(name, path):
+    if not re.match(r"^[\w.-]+$", name):
+        sys.exit(f"mutant-triage: {name!r}: use letters, digits, '.', '_' or '-'")
+    dest = os.path.join(state_dir(), f"{name}.json")
+    with open(path, "rb") as src, open(dest, "wb") as out:
+        out.write(src.read())
+    print(f"mutant-triage: kept {path} as {name!r}")
+
+
+def cmd_run(a, root, cfg):
+    cmd = cfg.get("mutation_run")
+    if not cmd:
+        sys.exit("mutant-triage: set mutation_run= in .claude/checks")
+    start = time.time()
+    rc = run(cmd, root)
+    path = newest_report(root, cfg, since=start)
+    if not path:
+        sys.exit(f"mutant-triage: the run (exit {rc}) wrote no JSON report matching mutation_report=")
+    keep(a.name, path)
+    return 0
+
+
+def cmd_snapshot(a, root, cfg):
+    keep(a.name, resolve(a.report, root, cfg))
+    return 0
+
+
+def cmd_rerun(a, root, cfg):
+    cmd = cfg.get("mutation_rerun")
+    if not cmd:
+        sys.exit("mutant-triage: set mutation_rerun= in .claude/checks")
+    file, _, line = a.target.partition(":")
+    if not SAFE_PATH.match(file) or (line and not line.isdigit()):
+        sys.exit(f"mutant-triage: {a.target!r} is not FILE or FILE:LINE")
+    if "{line}" in cmd and not line:
+        sys.exit("mutant-triage: mutation_rerun= uses {line}; give FILE:LINE")
+    cmd = cmd.replace("{file}", file).replace("{name}", os.path.basename(file)).replace("{line}", line)
+    start = time.time()
+    rc = run(cmd, root)
+    path = newest_report(root, cfg, since=start)
+    if not path:
+        sys.exit(f"mutant-triage: the rerun (exit {rc}) wrote no JSON report matching mutation_report=")
+    mutants, _, _ = load(path)
+    name = os.path.basename(file)
+    mine = sorted((m for m in mutants.values() if os.path.basename(m.file) == name and not m.out_of_scope()),
+                  key=lambda m: (m.line, m.col))
+    if line:
+        mine = [m for m in mine if m.line == int(line)]
+    print(f"{path}: {name}" + (f" line {line}" if line else ""))
+    for m in mine:
+        if m.status not in ("CompileError",):
+            print(f"  {m.key}  {m.where}  {m.status}  {describe(m)}" + (f"  ({m.reason})" if m.reason else ""))
+    return 0
+
+
+def cmd_record(a, root, cfg):
+    *keys, outcome = a.args
+    if outcome not in OUTCOMES or not keys:
+        sys.exit(f"mutant-triage: record KEY... OUTCOME, OUTCOME one of {', '.join(OUTCOMES)}")
+    if outcome in ("suppressed", "follow-up", "spec") and not a.note:
+        sys.exit(f"mutant-triage: {outcome} needs --note (the reason, the task ref, or the question's link)")
+    mutants, _, _ = load(resolve(a.report, root, cfg))
+    if a.before:
+        mutants = {**load(resolve(a.before, root, cfg))[0], **mutants}
+    data = outcomes()
+    for k in keys:
+        m = mutants.get(k)
+        if not m:
+            sys.exit(f"mutant-triage: no mutant {k} in that report")
+        data[k] = {"outcome": outcome, "note": a.note or "", "where": m.where, "mutant": describe(m)}
+        print(f"{k}  {m.where}  {outcome}" + (f": {a.note}" if a.note else ""))
+    save_outcomes(data)
+    return 0
+
+
+def cmd_summary(a, root, cfg):
+    old, new = load(resolve(a.before, root, cfg)), load(resolve(a.after, root, cfg))
+    done = outcomes()
+    rows = {o: [] for o in (*OUTCOMES, "untriaged")}
+    hidden = []
+    for key, b, n in compare(old, new):
+        rec = done.get(key)
+        if b and b.status in CAUGHT and n and n.ignored_by_author():
+            hidden.append((n, rec))
+        if not b or b.status not in OPEN:
+            continue
+        if rec:
+            rows[rec["outcome"]].append((b, rec["note"]))
+        elif n and n.status in CAUGHT:
+            rows["killed"].append((b, short_test(n.killed_by[0]) if n.killed_by else ""))
+        elif n and n.ignored_by_author():
+            rows["suppressed"].append((b, n.reason))
+        else:
+            rows["untriaged"].append((b, "no longer mutated" if not n else n.status))
+    total = sum(len(v) for v in rows.values())
+    print(f"{total} survivors and uncovered mutants ({sum(b.status == 'NoCoverage' for v in rows.values() for b, _ in v)}"
+          " uncovered):\n")
+    print("| Outcome | Count |\n|---|---|")
+    names = {"killed": "Killed by a new test", "suppressed": "Suppressed as equivalent, with a reason",
+             "follow-up": "Left for a follow-up task", "spec": "Spec question", "untriaged": "Not triaged yet"}
+    for o, label in names.items():
+        if rows[o]:
+            print(f"| {label} | {len(rows[o])} |")
+    for o, label in names.items():
+        if rows[o]:
+            print(f"\n### {label}\n")
+            for m, note in sorted(rows[o], key=lambda r: (r[0].file, r[0].line)):
+                print(f"- `{m.where}` {m.mutator}: `{m.shown(m.original, 50)}` → `{m.shown(m.replacement, 40)}`"
+                      + (f" ({note})" if note else ""))
+    unconfirmed = [m for m, rec in hidden if not (rec and rec["outcome"] == "suppressed")]
+    if hidden:
+        print(f"\n{len(hidden)} mutant(s) the tests caught before are now ignored by a suppression"
+              + (f"; {len(unconfirmed)} not confirmed (run `mutant-triage diff`)." if unconfirmed
+                 else ", each confirmed as its condition's own."))
+    return 1 if rows["untriaged"] or unconfirmed else 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("list", help="survivors and uncovered mutants")
+    s.add_argument("report", nargs="?")
+    s.add_argument("--all", action="store_true", help="include those with a recorded outcome")
+    s.add_argument("--context", type=int, default=0, metavar="N", help="show N lines of source around each")
+    for name in ("diff", "summary"):
+        s = sub.add_parser(name)
+        s.add_argument("before")
+        s.add_argument("after")
+    s = sub.add_parser("run", help="full run via mutation_run=, kept as NAME")
+    s.add_argument("name")
+    s = sub.add_parser("snapshot", help="keep a report as NAME")
+    s.add_argument("name")
+    s.add_argument("report", nargs="?")
+    s = sub.add_parser("rerun", help="one file's mutants via mutation_rerun=")
+    s.add_argument("target", metavar="FILE[:LINE]")
+    s = sub.add_parser("record", help="record KEY... OUTCOME")
+    s.add_argument("args", nargs="+", metavar="KEY... OUTCOME")
+    s.add_argument("--note", help="reason, follow-up task ref, or link to the spec question")
+    s.add_argument("--report", help="report the keys come from (default: newest)")
+    s.add_argument("--before", help="also look keys up in this report (a survivor whose code is gone)")
+    a = p.parse_args(argv)
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # quiet when piped into head
+    root = repo_root()
+    cfg = config(root)
+    return {"list": cmd_list, "diff": cmd_diff, "summary": cmd_summary, "run": cmd_run, "snapshot": cmd_snapshot,
+            "rerun": cmd_rerun, "record": cmd_record}[a.cmd](a, root, cfg)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

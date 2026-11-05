@@ -1,0 +1,66 @@
+name: Release
+
+# Push a v<semver> tag (e.g. v0.1.0) to test, pack that version and push it to nuget.org.
+# Uses nuget.org trusted publishing: a policy on nuget.org for this repo and workflow file, and
+# the repo variable NUGET_USER (the nuget.org account that owns the policy). No API key secret.
+on:
+  push:
+    tags: [ 'v*' ]
+
+concurrency: release
+
+permissions: {}
+
+jobs:
+
+  test:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # creates the GitHub release
+      id-token: write  # nuget.org trusted publishing
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install .NET
+      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Pack
+      env:
+        TAG: ${{ github.ref_name }}
+      run: |
+        version=${TAG#v}
+        [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] ||
+          { echo "::error::$TAG isn't v<semver>"; exit 1; }
+        dotnet pack Buildingway.Tools -c Release --nologo -o pack -p:Version="$version"
+
+    - name: Log in to nuget.org
+      id: login
+      uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+      with:
+        user: ${{ vars.NUGET_USER }}
+
+    - name: Push to nuget.org
+      env:
+        NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+      run: dotnet nuget push pack/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json
+
+    - name: GitHub release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+      run: |
+        prerelease=()
+        [[ $TAG == *-* ]] && prerelease=(--prerelease)
+        gh release create "$TAG" pack/*.nupkg --repo "$GITHUB_REPOSITORY" --generate-notes "${prerelease[@]}"

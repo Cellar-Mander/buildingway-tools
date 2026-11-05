@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Runs on any newer runtime too, so a project on a later SDK needn't install .NET 10 -->
+    <RollForward>Major</RollForward>
+
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>buildingway</ToolCommandName>
+    <PackageId>Buildingway.Tools</PackageId>
+    <!-- Release builds pass -p:Version from the tag -->
+    <Version>0.0.0-dev</Version>
+    <Authors>Cellar Mander</Authors>
+    <Description>Dev and release commands for Dalamud plugin projects: deploy to the in-game dev folder, prepare, publish and verify releases, revert-check and mutant-triage.</Description>
+    <PackageProjectUrl>https://github.com/Cellar-Mander/buildingway-tools</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Cellar-Mander/buildingway-tools</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>dalamud;ffxiv;plugin;release</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ebd's Python tools, run with python3; see Scripts/SOURCES -->
+    <EmbeddedResource Include="Scripts\revert-check" LogicalName="revert-check" />
+    <EmbeddedResource Include="Scripts\mutant-triage" LogicalName="mutant-triage" />
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <InternalsVisibleTo Include="Buildingway.Tools.Tests" />
+  </ItemGroup>
+
+</Project>
