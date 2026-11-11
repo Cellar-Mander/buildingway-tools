@@ -9,12 +9,25 @@
     mutant-triage rerun FILE[:LINE]                     run one file's mutants (mutation_rerun=)
     mutant-triage record KEY... OUTCOME [--note TEXT]   killed, suppressed, follow-up or spec
     mutant-triage summary BEFORE AFTER                  every survivor's outcome, as Markdown
+    mutant-triage tests --revert JSON [REPORT]          which new and changed tests kill mutants on the
+                                                        branch's changed lines, joined with `revert-check
+                                                        --json JSON`; never starts a mutation run
 
-Reads the mutation-testing-elements JSON report that Stryker (.NET, JS, Scala) writes. REPORT,
-BEFORE and AFTER are a path or a NAME kept by run/snapshot; without one, the newest report
-matching mutation_report= is used. Mutants are matched across runs by file, mutator, original
-text and replacement (whitespace and whole-line // comments ignored), not by line, so adding a
-suppression comment or a test doesn't break the match. KEY is a short hash of that identity.
+Reads the mutation-testing-elements JSON report that Stryker (.NET, JS, Scala) writes, or the
+JSON lines that `cosmic-ray dump SESSION` writes (Python). REPORT, BEFORE and AFTER are a path
+or a NAME kept by run/snapshot; without one, the newest report matching mutation_report= is used.
+Mutants are matched across runs by file, mutator, original text, replacement and the text of the
+lines they span (whitespace and comments ignored), not by line number, so adding a suppression
+comment or a test doesn't break the match, and removing one of two identical mutants doesn't hand
+its key to the other. cosmic-ray records no replacement for a mutant a filter skipped, so its
+mutants are matched without one. KEY is a short hash of that identity. When a mutant's line is
+rewritten, diff and summary still pair it with its old self if it is the only unmatched mutant of
+its kind in that file (or each run has the same number of them). A cosmic-ray dump has no source text: it is read from the working tree, and run and
+snapshot keep a copy with the report. A mutant cr-filter-pragma skipped counts as suppressed by
+the author, with the text after `# pragma: no mutate` as its reason.
+A coverage.json next to a cosmic-ray dump (tests/mutation.sh --since writes it) says which tests
+run each mutant's lines, as Stryker's coveredBy does, and is kept with the report too. A mutant
+whose recorded output says no test ran it counts as NoCoverage, not as a survivor.
 
 Outcomes and kept reports live in the git directory (per worktree, never committed), or in
 $MUTANT_TRIAGE_DIR.
@@ -38,7 +51,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_REPORTS = ["**/StrykerOutput/*/reports/mutation-report.json", "reports/mutation/mutation.json",
                    "target/stryker4s-report/*/report.json"]
@@ -50,11 +63,34 @@ TOOL_FILTER = re.compile(r"^Removed by .* filter$")
 OUT_OF_SCOPE = re.compile(r"mutate filter|since filter|not changed", re.IGNORECASE)
 OUTCOMES = ("killed", "suppressed", "follow-up", "spec")
 WHOLE_LINE_COMMENT = re.compile(r"^\s*//.*$", re.MULTILINE)
+SLASH_COMMENT = re.compile(r"//.*$", re.MULTILINE)
+PY_COMMENT = re.compile(r"#.*$", re.MULTILINE)
+# cr-filter-pragma skips a mutant whose last line matches .*#.*pragma:.*no mutate.*
+PRAGMA = re.compile(r"#.*pragma:.*no mutate\s*:?\s*(.*)")
 SAFE_PATH = re.compile(r"^[\w./@+-]+$")
 
 
 def norm(text):
     return " ".join(WHOLE_LINE_COMMENT.sub("", text).split())
+
+
+def spanned(text, first, last):
+    """Lines first..last (1-based) of text: part of a mutant's identity, so identical mutants on different lines
+    keep their keys when one of them goes."""
+    return "".join(text.splitlines(keepends=True)[first - 1:last])
+
+
+def last_line(start, end):
+    """A mutation's last line, the one cr-filter-pragma reads: the line before its end when it ends at a line
+    start, unless that is above its first line. start/end are (1-based line, 0-based column)."""
+    return max(start[0], end[0] - (not end[1]))
+
+
+def make_key(ident, seen):
+    """Key of a mutant; identical ones (same identity, same line text) are numbered in source order."""
+    n = seen.get(ident, 0)
+    seen[ident] = n + 1
+    return hashlib.sha1(json.dumps([*ident, n]).encode()).hexdigest()[:8]
 
 
 @dataclass
@@ -69,6 +105,9 @@ class Mutant:
     status: str
     reason: str
     killed_by: list
+    ident: tuple = ()  # identity without the line text, for pairing mutants whose line changed
+    kill_kind: dict = field(default_factory=dict)  # killing test -> "assertion", "exception" or "test failure"
+    covered_by: list = field(default_factory=list)  # tests that ran the mutated code (Stryker, or a coverage map)
 
     @property
     def where(self):
@@ -93,11 +132,18 @@ def offsets(source):
     return starts
 
 
-def load(path):
-    """Mutants in a report, keyed by identity (duplicates of one identity get an occurrence index), the report,
-    and the files this run mutated (a --mutate or --since run leaves the others out)."""
+def load(path, repo="."):
+    """Mutants in a report, keyed by identity and line text (duplicates get an occurrence index), each file's
+    source text, and the files this run mutated (a --mutate or --since run leaves the others out). repo is where
+    a cosmic-ray dump's relative paths start."""
     with open(path, encoding="utf-8") as f:
-        report = json.load(f)
+        text = f.read()
+    if not text.strip() or text.lstrip().startswith("["):  # `cosmic-ray dump` of an empty session writes nothing
+        return load_cosmic_ray([json.loads(line) for line in text.splitlines() if line.strip()], {}, repo,
+                               cr_coverage(path))
+    report = json.loads(text)
+    if "cosmic-ray" in report:
+        return load_cosmic_ray(report["cosmic-ray"], report.get("sources") or {}, repo, report.get("coverage") or {})
     root = report.get("projectRoot") or ""
     tests = {t["id"]: t.get("name", t["id"]) for tf in (report.get("testFiles") or {}).values()
              for t in tf.get("tests", [])}
@@ -112,16 +158,176 @@ def load(path):
             s, e = m["location"]["start"], m["location"]["end"]
             original = src[at(src, starts, s):at(src, starts, e)]
             ident = (rel, m["mutatorName"], norm(original), norm(m.get("replacement", "")))
-            n = seen.get(ident, 0)
-            seen[ident] = n + 1
-            key = hashlib.sha1(json.dumps([*ident, n]).encode()).hexdigest()[:8]
+            line = norm(SLASH_COMMENT.sub("", spanned(src, s["line"], e["line"])))
+            key = make_key((*ident, line), seen)
+            killers = [tests.get(t, t) for t in m.get("killedBy") or []]
             mutants[key] = Mutant(key, rel, s["line"], s["column"], m["mutatorName"], original,
                                   m.get("replacement", ""), m["status"], m.get("statusReason") or "",
-                                  [tests.get(t, t) for t in m.get("killedBy") or []])
+                                  killers, ident, dict.fromkeys(killers, "test failure"),
+                                  [tests.get(t, t) for t in m.get("coveredBy") or []])
             scoped = scoped or not mutants[key].out_of_scope()
         if scoped or not entry.get("mutants"):
             files.add(rel)
-    return mutants, report, files
+    sources = {(os.path.relpath(p, root) if root and os.path.isabs(p) else p): e.get("source", "")
+               for p, e in report.get("files", {}).items()}
+    return mutants, sources, files
+
+
+def cr_file(module_path, repo):
+    """Repo-relative path of a module cosmic-ray mutated, through a `.py` symlink to an extensionless script."""
+    full = os.path.join(repo, module_path)
+    return os.path.relpath(os.path.realpath(full), os.path.realpath(repo)) if os.path.islink(full) else module_path
+
+
+def cr_coverage(report_path):
+    """Which tests run each line of the mutated files, {file: {sha256, tests, lines}}, from the coverage.json that
+    tests/mutation.sh --since (tests/mutation_select.py) writes next to its report; {} if there is none."""
+    try:
+        with open(os.path.join(os.path.dirname(report_path), "coverage.json"), encoding="utf-8") as f:
+            return json.load(f).get("files") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def cr_covered_by(cov, src, first, last):
+    """Tests a coverage map says run any of lines first..last, or [] if the map was made from other code."""
+    if not cov or cov.get("sha256") != hashlib.sha256(src.encode()).hexdigest():
+        return []
+    hit = {i for n in range(first, last + 1) for i in cov["lines"].get(str(n), ())}
+    return [cov["tests"][i] for i in sorted(hit)]
+
+
+def read_source(repo, rel):
+    try:
+        with open(os.path.join(repo, rel), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def cr_sources(records, repo):
+    """Working-tree text of every file a cosmic-ray dump mutated."""
+    files = {cr_file(w["mutations"][0]["module_path"], repo) for w, _ in records if w["mutations"]}  # pragma: no mutate: a work item holds one mutation ([-1])
+    return {rel: read_source(repo, rel) for rel in sorted(files)}
+
+
+def diff_block(diff):
+    """(first old line number, removed text, added text) of a unified diff's first changed run, or None."""
+    lines, first, minus, plus = (diff or "").splitlines(keepends=True), None, [], []
+    in_hunk = False
+    for line in lines:
+        if line.startswith("@@"):
+            if first is not None:
+                break
+            m = re.match(r"@@ -(\d+)", line)
+            old, in_hunk = int(m.group(1)) if m else 0, True
+        elif not in_hunk or line.startswith("\\"):
+            continue
+        elif line.startswith("-"):
+            first = old if first is None else first
+            minus.append(line[1:])
+        elif line.startswith("+"):
+            first = old if first is None else first
+            plus.append(line[1:])
+        elif first is not None:
+            break
+        else:
+            old += 1
+    return (first, "".join(minus), "".join(plus)) if first is not None else None
+
+
+def cr_texts(src, start, end, diff):
+    """Original and replacement text of a cosmic-ray mutation, and the text of the lines it spans. start/end are
+    (1-based line, 0-based column). The diff, written when the mutant ran, wins over src (today's working tree); a
+    skipped mutant has no diff, so its replacement shows as "?"."""
+    starts = offsets(src)
+    last = last_line(start, end)
+
+    def off(text_starts, base, pos):
+        return text_starts[min(pos[0] - base, len(text_starts) - 1)] + pos[1]
+
+    original = src[off(starts, 1, start):off(starts, 1, end)]
+    block = diff_block(diff)
+    if not block:
+        return original, "?", spanned(src, start[0], last)
+    first, minus, plus = block
+    ms = offsets(minus)
+    if (first <= start[0]  # pragma: no mutate: cosmic-ray changes nothing before a mutation, so first >= start[0] (==, is)
+            and end[0] - first < len(ms) - 1 + (not end[1])):
+        so, eo = off(ms, first, start), off(ms, first, end)
+        # Every mutated line changed and cosmic-ray changes nothing else, so minus is exactly those lines.
+        return minus[so:eo], plus[so:len(plus) - (len(minus) - eo)], minus
+    # The mutation spans lines the diff doesn't show as changed: show the changed part alone.
+    p = len(os.path.commonprefix([minus, plus]))
+    s = len(os.path.commonprefix([minus[p:][::-1], plus[p:][::-1]]))
+    return original, plus[p:len(plus) - s], spanned(src, start[0], last)
+
+
+def cr_status(result, last_line):
+    """Stryker-style status and reason of a cosmic-ray work result."""
+    if not result:
+        return "Pending", "not run yet"
+    worker, test = result.get("worker_outcome"), result.get("test_outcome")
+    if worker == "skipped":  # pragma: no mutate: no worker outcome sorts after skipped (>=)
+        m = PRAGMA.search(last_line)
+        return ("Ignored", m.group(1).strip() or "pragma: no mutate") if m else ("Ignored", "Removed by cosmic-ray filter")
+    if test == "killed":
+        return ("Timeout", "") if result.get("output") == "timeout" else ("Killed", "")
+    if test == "survived":
+        return ("NoCoverage", "no test runs it") if NO_COVERAGE in (result.get("output") or "") else ("Survived", "")
+    if test == "incompetent":
+        return "CompileError", ((result.get("output") or "").strip().splitlines() or [""])[-1]
+    return "RuntimeError", worker or ""
+
+
+# What tests/mutation_select.py prints, and exits 0 after, when no test runs a mutant's line: cosmic-ray records a
+# survivor, but no test ran the mutant.
+NO_COVERAGE = "mutation_select: no test runs the mutated line"
+UNITTEST_FAILURE = re.compile(r"^(FAIL|ERROR): (\w+) \(([\w.]+)\)", re.MULTILINE)
+
+
+def unittest_killers(output):
+    """Failing tests in unittest output, qualified (module.Class.test), with how each failed: FAIL is an assertion,
+    ERROR an exception. Python 3.11+ ends the parenthesised id with the test name; 3.10 stops at the class."""
+    kinds = {}
+    for kind, name, where in UNITTEST_FAILURE.findall(output):
+        if not name.startswith("test"):  # setUpClass, a module that failed to import: no one test killed it
+            continue
+        qual = where if where.endswith("." + name) else f"{where}.{name}"
+        if kinds.get(qual) != "exception":
+            kinds[qual] = "assertion" if kind == "FAIL" else "exception"
+    return kinds
+
+
+def load_cosmic_ray(records, sources, repo, coverage=None):
+    """load() for `cosmic-ray dump` records: [work item, result or null] pairs. coverage: cr_coverage()."""
+    coverage = coverage or {}
+    sources = dict(sources)
+    rows = []
+    for work, result in records:
+        if not work.get("mutations"):
+            continue
+        mu = work["mutations"][0]  # pragma: no mutate: a work item holds one mutation ([-1])
+        rel = cr_file(mu["module_path"], repo)
+        if rel not in sources:
+            sources[rel] = read_source(repo, rel)
+        rows.append((rel, tuple(mu["start_pos"]), tuple(mu["end_pos"]), mu["operator_name"], mu.get("occurrence", 0),  # pragma: no mutate: cosmic-ray writes occurrence on every mutation (1, -1)
+                     result))
+    mutants, seen, files = {}, {}, set()
+    rows.sort(key=lambda r: r[:5])  # pragma: no mutate: any key that orders a file by position numbers identical mutants alike (4, 6)
+    for rel, start, end, op, _, result in rows:
+        src = sources[rel]
+        original, replacement, line = cr_texts(src, start, end, (result or {}).get("diff"))
+        lines = src.splitlines()
+        last = last_line(start, end)
+        status, reason = cr_status(result, lines[last - 1] if last <= len(lines) else "")
+        ident = (rel, op, norm(PY_COMMENT.sub("", original)), "")
+        key = make_key((*ident, norm(PY_COMMENT.sub("", line))), seen)
+        kinds = unittest_killers((result or {}).get("output") or "") if status == "Killed" else {}
+        mutants[key] = Mutant(key, rel, start[0], start[1] + 1, op, original, replacement, status, reason,
+                              list(kinds), ident, kinds, cr_covered_by(coverage.get(rel), src, start[0], last))
+        files.add(rel)
+    return mutants, sources, files
 
 
 def at(src, starts, pos):
@@ -132,7 +338,7 @@ def at(src, starts, pos):
 
 def git(*args):
     r = subprocess.run(["git", *args], check=False, capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else ""
+    return r.stdout.strip() if r.returncode == 0 else ""  # pragma: no mutate: git prints nothing to stdout when it fails (>=, <=)
 
 
 def repo_root():
@@ -161,7 +367,7 @@ def state_dir():
     return d
 
 
-def newest_report(root, cfg, since=0.0):
+def newest_report(root, cfg, since=float("-inf")):
     found = []
     for g in cfg.get("mutation_report", "").split() or DEFAULT_REPORTS:
         found += glob.glob(os.path.join(root, g), recursive=True)
@@ -196,7 +402,7 @@ def outcomes():
 def save_outcomes(data):
     path = os.path.join(state_dir(), "outcomes.json")
     with open(path + ".tmp", "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1, sort_keys=True)
+        json.dump(data, f, indent=1, sort_keys=True)  # pragma: no mutate: layout only; json.load reads any (indent, sort_keys)
     os.replace(path + ".tmp", path)
 
 
@@ -204,19 +410,15 @@ def describe(m):
     return f"{m.mutator}: {m.shown(m.original)!r} -> {m.shown(m.replacement)!r}"
 
 
-def context(m, report, n):
-    for path_, entry in report["files"].items():
-        root = report.get("projectRoot") or ""
-        if (os.path.relpath(path_, root) if root and os.path.isabs(path_) else path_) == m.file:
-            lines = entry.get("source", "").splitlines()
-            lo, hi = max(1, m.line - n), min(len(lines), m.line + n)
-            return [f"      {'>' if i == m.line else ' '}{i:5} {lines[i - 1]}" for i in range(lo, hi + 1)]
-    return []
+def context(m, sources, n):
+    lines = sources.get(m.file, "").splitlines()
+    lo, hi = max(1, m.line - n), min(len(lines), m.line + n)
+    return [f"      {'>' if i == m.line else ' '}{i:5} {lines[i - 1]}" for i in range(lo, hi + 1)]
 
 
 def cmd_list(a, root, cfg):
     path = resolve(a.report, root, cfg)
-    mutants, report, _ = load(path)
+    mutants, sources, _ = load(path, root)
     done = outcomes()
     shown = [m for m in mutants.values() if m.status in OPEN and (a.all or m.key not in done)]
     shown.sort(key=lambda m: (m.file, m.line, m.col))
@@ -224,35 +426,59 @@ def cmd_list(a, root, cfg):
           f"{sum(m.status == 'NoCoverage' for m in mutants.values())} no coverage"
           + (f", {len(shown)} without a recorded outcome" if not a.all else ""))
     for m in shown:
-        tag = "survived" if m.status == "Survived" else "NO COVERAGE"
+        tag = "survived" if m.status == "Survived" else "NO COVERAGE"  # pragma: no mutate: status is Survived or NoCoverage here (>=)
         rec = done.get(m.key)
         print(f"{m.key}  {m.where}  {tag}  {describe(m)}" + (f"  [{rec['outcome']}: {rec['note']}]" if rec else ""))
         if a.context:
-            print("\n".join(context(m, report, a.context)))
+            print("\n".join(context(m, sources, a.context)))
     if cfg.get("spec"):
         print(f"Spec to check behaviour against: {cfg['spec']}")
     return 0
 
 
 def compare(old, new):
-    """Pairs (key, before mutant or None, after mutant or None) over files mutated in both runs."""
+    """Pairs (before mutant or None, after mutant or None) over files mutated in both runs, matched by key. A
+    mutant whose line changed gets a new key; the unmatched mutants of one identity are paired in source order when
+    both runs have the same number of them, and otherwise count as gone and new."""
     (before, _, bfiles), (after, _, afiles) = old, new
     files = bfiles & afiles
+    left = {}
     for key in sorted(set(before) | set(after)):
         b, n = before.get(key), after.get(key)
         if (b or n).file not in files:
             continue
-        yield key, b, n
+        if b and n:
+            yield b, n
+        else:
+            left.setdefault((b or n).ident, ([], []))[0 if b else 1].append(b or n)
+    for bs, ns in left.values():
+        bs.sort(key=lambda m: (m.line, m.col))
+        ns.sort(key=lambda m: (m.line, m.col))
+        if len(bs) == len(ns):  # pragma: no mutate: counts of one identity are small ints, which are cached (is)
+            yield from zip(bs, ns)
+        else:
+            yield from ((b, None) for b in bs)
+            yield from ((None, n) for n in ns)
+
+
+def confirmed(rec):
+    """Whether a recorded outcome confirms a hidden mutant as its suppression's own."""
+    return bool(rec) and rec["outcome"] == "suppressed"  # pragma: no mutate: no outcome sorts after suppressed (>=)
+
+
+def recorded(done, b, n):
+    """The outcome recorded for a mutant under its before or its after key."""
+    return next((done[m.key] for m in (b, n) if m and m.key in done), None)
 
 
 def cmd_diff(a, root, cfg):
-    old, new = load(resolve(a.before, root, cfg)), load(resolve(a.after, root, cfg))
+    old, new = load(resolve(a.before, root, cfg), root), load(resolve(a.after, root, cfg), root)
     done = outcomes()
     groups = {k: [] for k in ("hidden", "regressed", "killed", "suppressed", "gone", "new_open")}
-    for key, b, n in compare(old, new):
+    for b, n in compare(old, new):
         if b and n:
             if b.status in CAUGHT and n.ignored_by_author():
-                groups["hidden"].append((n, done.get(key)))
+                groups["hidden"].append((n, recorded(done, b, n)))
             elif (b.status in CAUGHT or b.ignored_by_author()) and n.status in OPEN:
                 groups["regressed"].append((n, None))
             elif b.status in OPEN and n.status in CAUGHT:
@@ -263,7 +489,7 @@ def cmd_diff(a, root, cfg):
             groups["gone"].append((b, None))
         elif n and n.status in OPEN:
             groups["new_open"].append((n, None))
-    unconfirmed = [m for m, rec in groups["hidden"] if not (rec and rec["outcome"] == "suppressed")]
+    unconfirmed = [m for m, rec in groups["hidden"] if not confirmed(rec)]
     labels = [
         ("hidden", "CAUGHT BEFORE, NOW IGNORED"),
         ("regressed", "CAUGHT OR SUPPRESSED BEFORE, NOW SURVIVING OR UNCOVERED"),
@@ -277,14 +503,17 @@ def cmd_diff(a, root, cfg):
             print(f"{label}: {len(groups[g])}")
             for m, rec in groups[g]:
                 extra = f"  ({m.reason})" if g in ("hidden", "suppressed") and m.reason else ""
-                if g == "killed" and m.killed_by:
+                if m.killed_by:  # only Killed mutants have killers, and they are all in the killed group
                     extra = f"  by {short_test(m.killed_by[0])}"
-                ok = "  [confirmed]" if rec and rec["outcome"] == "suppressed" else ""
+                ok = "  [confirmed]" if confirmed(rec) else ""
                 print(f"  {m.key}  {m.where}  {describe(m)}{extra}{ok}")
     if unconfirmed:
-        print("A suppression above covers mutants the tests caught. Narrow it (put the comment on its own line just "
-              "before the condition), or, for that condition's own mutants, confirm each with "
-              "`mutant-triage record KEY suppressed --note <why>`.")
+        how = ("split the expression so the suppressed part ends a line of its own: `# pragma: no mutate` covers "
+               "every mutant ending on its line" if any(m.file.endswith(".py") or m.mutator.startswith("core/")
+                                                         for m in unconfirmed)
+               else "put the comment on its own line just before the condition")
+        print(f"A suppression above covers mutants the tests caught. Narrow it ({how}), or, for that condition's "
+              "own mutants, confirm each with `mutant-triage record KEY suppressed --note <why>`.")
     if not any(groups.values()):
         print("No survivor, uncovered or caught mutant changed status.")
     return 1 if unconfirmed or groups["regressed"] else 0
@@ -300,12 +529,17 @@ def run(cmd, root):
     return subprocess.run(["bash", "-c", cmd], cwd=root, check=False).returncode
 
 
-def keep(name, path):
+def keep(name, path, root):
     if not re.match(r"^[\w.-]+$", name):
         sys.exit(f"mutant-triage: {name!r}: use letters, digits, '.', '_' or '-'")
     dest = os.path.join(state_dir(), f"{name}.json")
-    with open(path, "rb") as src, open(dest, "wb") as out:
-        out.write(src.read())
+    with open(path, encoding="utf-8") as src:
+        text = src.read()
+    if text.lstrip().startswith("["):  # a cosmic-ray dump: keep today's sources with it
+        records = [json.loads(line) for line in text.splitlines() if line.strip()]
+        text = json.dumps({"cosmic-ray": records, "sources": cr_sources(records, root), "coverage": cr_coverage(path)})
+    with open(dest, "w", encoding="utf-8") as out:
+        out.write(text)
     print(f"mutant-triage: kept {path} as {name!r}")
 
 
@@ -313,17 +547,18 @@ def cmd_run(a, root, cfg):
     cmd = cfg.get("mutation_run")
     if not cmd:
         sys.exit("mutant-triage: set mutation_run= in .claude/checks")
-    start = time.time()
+    # File times come from a coarser clock than time.time(), so a report written at once can look a few ms older.
+    start = time.time() - 1
     rc = run(cmd, root)
     path = newest_report(root, cfg, since=start)
     if not path:
         sys.exit(f"mutant-triage: the run (exit {rc}) wrote no JSON report matching mutation_report=")
-    keep(a.name, path)
+    keep(a.name, path, root)
     return 0
 
 
 def cmd_snapshot(a, root, cfg):
-    keep(a.name, resolve(a.report, root, cfg))
+    keep(a.name, resolve(a.report, root, cfg), root)
     return 0
 
 
@@ -337,12 +572,13 @@ def cmd_rerun(a, root, cfg):
     if "{line}" in cmd and not line:
         sys.exit("mutant-triage: mutation_rerun= uses {line}; give FILE:LINE")
     cmd = cmd.replace("{file}", file).replace("{name}", os.path.basename(file)).replace("{line}", line)
-    start = time.time()
+    # File times come from a coarser clock than time.time(), so a report written at once can look a few ms older.
+    start = time.time() - 1
     rc = run(cmd, root)
     path = newest_report(root, cfg, since=start)
     if not path:
         sys.exit(f"mutant-triage: the rerun (exit {rc}) wrote no JSON report matching mutation_report=")
-    mutants, _, _ = load(path)
+    mutants, _, _ = load(path, root)
     name = os.path.basename(file)
     mine = sorted((m for m in mutants.values() if os.path.basename(m.file) == name and not m.out_of_scope()),
                   key=lambda m: (m.line, m.col))
@@ -361,9 +597,9 @@ def cmd_record(a, root, cfg):
         sys.exit(f"mutant-triage: record KEY... OUTCOME, OUTCOME one of {', '.join(OUTCOMES)}")
     if outcome in ("suppressed", "follow-up", "spec") and not a.note:
         sys.exit(f"mutant-triage: {outcome} needs --note (the reason, the task ref, or the question's link)")
-    mutants, _, _ = load(resolve(a.report, root, cfg))
+    mutants, _, _ = load(resolve(a.report, root, cfg), root)
     if a.before:
-        mutants = {**load(resolve(a.before, root, cfg))[0], **mutants}
+        mutants = {**load(resolve(a.before, root, cfg), root)[0], **mutants}
     data = outcomes()
     for k in keys:
         m = mutants.get(k)
@@ -376,12 +612,12 @@ def cmd_record(a, root, cfg):
 
 
 def cmd_summary(a, root, cfg):
-    old, new = load(resolve(a.before, root, cfg)), load(resolve(a.after, root, cfg))
+    old, new = load(resolve(a.before, root, cfg), root), load(resolve(a.after, root, cfg), root)
     done = outcomes()
     rows = {o: [] for o in (*OUTCOMES, "untriaged")}
     hidden = []
-    for key, b, n in compare(old, new):
-        rec = done.get(key)
+    for b, n in compare(old, new):
+        rec = recorded(done, b, n)
         if b and b.status in CAUGHT and n and n.ignored_by_author():
             hidden.append((n, rec))
         if not b or b.status not in OPEN:
@@ -395,7 +631,7 @@ def cmd_summary(a, root, cfg):
         else:
             rows["untriaged"].append((b, "no longer mutated" if not n else n.status))
     total = sum(len(v) for v in rows.values())
-    print(f"{total} survivors and uncovered mutants ({sum(b.status == 'NoCoverage' for v in rows.values() for b, _ in v)}"
+    print(f"{total} survivors and uncovered mutants ({sum(b.status == 'NoCoverage' for v in rows.values() for b, _ in v)}"  # pragma: no mutate: status is Survived or NoCoverage here (<=)
           " uncovered):\n")
     print("| Outcome | Count |\n|---|---|")
     names = {"killed": "Killed by a new test", "suppressed": "Suppressed as equivalent, with a reason",
@@ -407,14 +643,167 @@ def cmd_summary(a, root, cfg):
         if rows[o]:
             print(f"\n### {label}\n")
             for m, note in sorted(rows[o], key=lambda r: (r[0].file, r[0].line)):
-                print(f"- `{m.where}` {m.mutator}: `{m.shown(m.original, 50)}` → `{m.shown(m.replacement, 40)}`"
+                print(f"- `{m.where}` {m.mutator}: `{m.shown(m.original, 50)}` → `{m.shown(m.replacement, 40)}`"  # pragma: no mutate: display widths (49, 51, 39, 41)
                       + (f" ({note})" if note else ""))
-    unconfirmed = [m for m, rec in hidden if not (rec and rec["outcome"] == "suppressed")]
+    unconfirmed = [m for m, rec in hidden if not confirmed(rec)]
     if hidden:
         print(f"\n{len(hidden)} mutant(s) the tests caught before are now ignored by a suppression"
               + (f"; {len(unconfirmed)} not confirmed (run `mutant-triage diff`)." if unconfirmed
                  else ", each confirmed as its condition's own."))
     return 1 if rows["untriaged"] or unconfirmed else 0
+
+
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+FAILS_ON_REVERT = ("guards", "needs_new")
+PASSES_ON_REVERT = ("unguarded", "marked")
+
+
+def hunks(diff):
+    """Lines a `git diff -U0` adds or changes in the new file, and the old-file ranges of hunks that only delete."""
+    changed, deleted = set(), []
+    for m in HUNK.finditer(diff):
+        old, old_n, new, new_n = int(m.group(1)), int(m.group(2) or 1), int(m.group(3)), int(m.group(4) or 1)
+        if new_n:
+            changed.update(range(new, new + new_n))
+        else:
+            deleted.append((old, old + old_n - 1))
+    return changed, deleted
+
+
+def killer_matches(killer, test):
+    """Whether a report's test id (unittest's module.Class.test, Stryker's Ns.Class.Method(args)) names a test
+    revert-check found ({name, path}). A dotted Python id must also agree on the module's file."""
+    parts = re.split(r"\.|::", killer.split("(")[0].split("/")[0].strip())
+    if parts[-1] != test["name"]:
+        return False
+    if test["path"].endswith(".py") and len(parts) >= 3:  # module.Class.test: the module is everything before
+        return "/".join(parts[:-2]) + ".py" == test["path"]
+    return True
+
+
+def changed_scope(rc, files):
+    """Changed lines per mutated product file, deletion-only hunks in them, and product files the run didn't mutate."""
+    lines, deleted, unmutated = {}, [], []
+    for entry in rc.get("product") or []:
+        path = entry["path"]
+        if entry["status"] == "D" or path not in files:
+            unmutated.append(path)
+            continue
+        changed, gone = hunks(git("diff", "-U0", "--no-ext-diff", rc["merge_base"], "--", path))
+        lines[path] = changed
+        deleted += [(path, lo, hi) for lo, hi in gone]
+    return lines, deleted, unmutated
+
+
+def on_changed(m, lines):
+    span = range(m.line, m.line + m.original.count("\n") + 1)
+    return bool(lines.get(m.file, set()).intersection(span))
+
+
+def test_verdict(group, kills, covers, unmutated):
+    """unmutated: changed product files the run didn't mutate. A test that reached no mutant may test one of them,
+    so its silence says nothing."""
+    if group == "cant_tell":
+        return "can't tell (revert-check couldn't say); not counted as a pass"
+    if group in FAILS_ON_REVERT:
+        if kills:
+            return "checks the change"
+        if unmutated and not covers:
+            return (f"can't tell: kills no mutant here, but may test {', '.join(unmutated)}, which this run didn't "
+                    "mutate; not counted as a pass")
+        return ("FAILS ON REVERT BUT KILLS NO CHANGED-LINE MUTANT: likely a trivial revert failure (a missing "
+                "symbol, flag or file), not a check of the change")
+    return ("pins changed lines, but passes on revert: not the change's net behaviour" if kills else
+            "doesn't guard the change (passes on revert, kills nothing)")
+
+
+def project_dir(path, root):
+    """Where a Stryker report's projectRoot sits in the repository, or "" (the repository itself, or not a Stryker
+    report). load() keeps paths relative to projectRoot, and Stryker.NET's is the project under test."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            project = json.load(f).get("projectRoot") or ""
+    except (ValueError, AttributeError):  # cosmic-ray dumps: JSON lines, or an empty list
+        return ""
+    if not os.path.isabs(project):
+        return ""
+    rel = os.path.relpath(os.path.realpath(project), os.path.realpath(root))
+    return "" if rel == "." else rel
+
+
+def cmd_tests(a, root, cfg):
+    with open(a.revert, encoding="utf-8") as f:
+        rc = json.load(f)
+    path = resolve(a.report, root, cfg)
+    mutants, _, files = load(path, root)
+    prefix = project_dir(path, root)
+    if prefix:  # revert-check's paths start at the repository
+        for m in mutants.values():
+            m.file = os.path.join(prefix, m.file)
+        files = {os.path.join(prefix, f) for f in files}
+    lines, deleted, unmutated = changed_scope(rc, files)
+    scoped = sorted((m for m in mutants.values() if on_changed(m, lines) and not m.out_of_scope()
+                     and m.status not in ("Ignored", "CompileError")), key=lambda m: (m.file, m.line, m.col))
+    tests = rc.get("tests") or []
+    print(f"mutant-triage tests: {len(scoped)} mutant(s) on the lines changed since {rc.get('base')} "
+          f"({rc['merge_base'][:8]}), from {path}, joined with revert-check for {len(tests)} new or changed test(s).")
+    # A NoCoverage mutant also says coverage was measured, even if no mutant was covered.
+    records_coverage = any(m.covered_by or m.status == "NoCoverage" for m in mutants.values())
+
+    print("\nNew and changed tests:")
+    for t in tests:
+        kills = [m for m in scoped if any(killer_matches(k, t) for k in m.killed_by)]
+        covers = [m for m in scoped if m not in kills and any(killer_matches(c, t) for c in m.covered_by)]
+        kinds = {}
+        for m in kills:
+            kind = next(m.kill_kind.get(k, "test failure") for k in m.killed_by if killer_matches(k, t))
+            kinds[kind] = kinds.get(kind, 0) + 1
+        if kills:
+            reach = f"kills {len(kills)} (" + ", ".join(f"{n} by {k}" for k, n in sorted(kinds.items())) + ")"
+        elif covers:
+            reach = f"covers {len(covers)}, kills none"
+        else:
+            reach = "reaches none" if records_coverage else "kills none (this report doesn't record coverage)"
+        print(f"  {t['name']}  {t['path']}:{t['line']}  revert-check: {t['group']}; mutants: {reach}")
+        print(f"    -> {test_verdict(t['group'], kills, covers, unmutated)}")
+
+    weak = [m for m in scoped if m.status in ("Timeout", "RuntimeError")]
+    if weak:
+        print(f"\nKilled by a timeout or runtime error, not a failing test ({len(weak)}; weak evidence, no test named):")
+        for m in weak:
+            print(f"  {m.where}  {m.status}  {describe(m)}")
+    if any(k == "test failure" for m in scoped for k in m.kill_kind.values()):
+        print("\nStryker's report doesn't say whether a killing test failed an assertion or threw, so those kills "
+              "show as 'test failure'.")
+
+    print("\nChanged lines (each line's mutants):")
+    by_line = {}
+    for m in scoped:
+        by_line.setdefault((m.file, m.line), []).append(m)
+    for (file, line), ms in sorted(by_line.items()):
+        counts = {}
+        for m in ms:
+            if m.status == "Killed" and any(killer_matches(k, t) for k in m.killed_by for t in tests):
+                label = "killed by a new test"
+            elif m.status == "Killed" and m.killed_by:
+                label = "killed only by old tests"
+            elif m.status in CAUGHT or m.status == "RuntimeError":
+                label = "killed, no test named"
+            elif m.status == "NoCoverage":
+                label = "not covered"
+            else:
+                label = m.status.lower()  # survived, pending
+            counts[label] = counts.get(label, 0) + 1
+        print(f"  {file}:{line}  " + ", ".join(f"{label} ({n})" for label, n in counts.items()))
+    print("  (A kill by an old test shows the line is exercised, not that the change is checked.)")
+
+    if deleted or unmutated:
+        print("\nNot probed by mutation (only revert-check covers these):")
+        for file, lo, hi in deleted:
+            print(f"  {file}: deleted line(s) {lo}" + (f"-{hi}" if hi > lo else "") + f" of {rc['merge_base'][:8]}")
+        for file in unmutated:
+            print(f"  {file}: changed, but this run didn't mutate it")
+    return 0
 
 
 def main(argv=None):
@@ -440,13 +829,16 @@ def main(argv=None):
     s.add_argument("--note", help="reason, follow-up task ref, or link to the spec question")
     s.add_argument("--report", help="report the keys come from (default: newest)")
     s.add_argument("--before", help="also look keys up in this report (a survivor whose code is gone)")
+    s = sub.add_parser("tests", help="which new and changed tests kill mutants on the changed lines")
+    s.add_argument("report", nargs="?")
+    s.add_argument("--revert", required=True, metavar="JSON", help="the file `revert-check --json` wrote")
     a = p.parse_args(argv)
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # quiet when piped into head
     root = repo_root()
     cfg = config(root)
     return {"list": cmd_list, "diff": cmd_diff, "summary": cmd_summary, "run": cmd_run, "snapshot": cmd_snapshot,
-            "rerun": cmd_rerun, "record": cmd_record}[a.cmd](a, root, cfg)
+            "rerun": cmd_rerun, "record": cmd_record, "tests": cmd_tests}[a.cmd](a, root, cfg)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no mutate: run as a script, or imported by the tests as mutant_triage, which sorts after __main__ (<=)
     sys.exit(main())
