@@ -12,10 +12,12 @@ permissions:
 
 jobs:
   mutation:
-    uses: Cellar-Mander/buildingway-ci/.github/workflows/mutation.yml@f9368131721c090fc548fb3f9200a0bc0339a11d # v0.6.0
+    uses: Cellar-Mander/buildingway-ci/.github/workflows/mutation.yml@2dc2514507e9a7a69c2cdd457483ce346095a244 # v0.7.0
     permissions:
       contents: read
       packages: read
       actions: read
     with:
       test-project: Buildingway.Tools.Tests
+      # kill-report runs the tool this PR builds: the package can't list itself in its tool manifest
+      buildingway-project: Buildingway.Tools
