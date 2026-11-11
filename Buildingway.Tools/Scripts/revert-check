@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """revert-check: do the branch's new or changed tests fail when its product changes are reverted?
 
-    revert-check [--ci] [--quiet] [--base REF] [--head REV]
+    revert-check [--ci] [--quiet] [--base REF] [--head REV] [--json PATH]
 
 Runs the tests twice in a temporary git worktree: at HEAD, then with every changed non-test
 file put back as it was at the merge base (tests stay at HEAD). A new or changed test that
 still passes with the product reverted doesn't guard the change. That is a pointer, not
 proof: some tests are meant to check something else. Mark those inside the test (or in the
 comment lines just above it) with:  revert-check: not revert-sensitive (<reason>)
+
+--json PATH also writes each new or changed test's group (guards, unguarded, marked, needs_new,
+cant_tell) as JSON, for `mutant-triage tests --revert PATH`.
 
 Never touches the working tree. Exits 0, except with --ci, where an unguarded unmarked test
 exits 1 and is annotated for GitHub Actions (leave the job out of required checks so it
@@ -26,6 +29,7 @@ Environment: REVERT_CHECK_TIMEOUT (seconds per run, default 900), REVERT_CHECK_L
 """
 
 import argparse
+import ast
 import contextlib
 import fnmatch
 import json
@@ -120,9 +124,23 @@ class TestDef:
     marked: bool = False
 
 
+def python_def_ends(path, text):
+    """{def line: last line} (1-based) for every function in a Python file that parses, else {}.
+    Lets a Python test end where its body does, not at the next def or class: module code after
+    a class's last test, or a decorator on the next class, isn't part of that test."""
+    if not path.endswith(".py"):
+        return {}
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+    return {n.lineno: n.end_lineno for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
 def test_defs(path, text):
     """Test functions in a file (Python, Go, JS/TS, C#, Rust), with their line spans."""
     lines = text.splitlines()
+    py_ends = python_def_ends(path, text)
     found = []  # (index of def/attribute line, index of first body line, indent, name)
     i = 0
     while i < len(lines):
@@ -148,6 +166,7 @@ def test_defs(path, text):
     for k, (i, body, indent, name) in enumerate(found):
         start = starts[k]
         end = starts[k + 1] if k + 1 < len(found) else len(lines)
+        end = min(end, py_ends.get(i + 1, end))
         for j in range(body, end):
             b = BOUNDARY.match(lines[j])
             if b and len(b.group(1)) <= indent:
@@ -175,14 +194,14 @@ def merge(results, name, outcome):
 def parse_unittest(output):
     """Per-test outcomes from unittest -v output, or None if it isn't verbose unittest output."""
     results, cur = {}, None
-    name_line = re.compile(r"^(\w+) \(([\w.]+)\)")
+    # A test whose subTest failed prints "... " with no outcome, so the next test shares its line.
+    name_at = re.compile(r"(?:^| \.\.\. )(\w+) \(([\w.]+)\)")
     for line in output.splitlines():
         m = re.match(r"^(FAIL|ERROR): (\w+) \(", line)
         if m:
             merge(results, m.group(2), "fail")
             continue
-        m = name_line.match(line)
-        if m:
+        for m in name_at.finditer(line):
             cur = m.group(1)
             if m.group(2).split(".")[-1] == cur or m.group(1).startswith("test"):
                 merge(results, cur, "pass")
@@ -418,6 +437,15 @@ def report(groups, others, header, footer, ci):
                 f.write("## revert-check\n\n```\n" + text + "\n```\n")
 
 
+def write_json(path, base, mb, head, groups, product):
+    tests = [{"name": d.name, "path": d.path, "line": d.line, "group": key, "why": why}
+             for key, items in groups.items() for d, why in items]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"base": base, "merge_base": mb, "head": head, "tests": tests,
+                   "product": [{"status": s, "path": p} for s, p in product]}, f, indent=1)
+        f.write("\n")
+
+
 def log(root, base, groups, secs, ci):
     if ci:
         return
@@ -438,6 +466,7 @@ def main(argv=None):
     p.add_argument("--base", help="base branch or commit (default: PR base, origin/HEAD, main, master)")
     p.add_argument("--head", default="HEAD", help="revision to check (default HEAD)")
     p.add_argument("--quiet", action="store_true", help="say nothing when there is nothing to check")
+    p.add_argument("--json", metavar="PATH", help="also write each new or changed test's group to PATH as JSON")
     p.add_argument("--test-cmd", help="test command to use instead of .claude/checks or detection "
                                       "(e.g. for old commits that predate revert_test=)")
     a = p.parse_args(argv)
@@ -550,6 +579,8 @@ def main(argv=None):
         footer += (" No per-test results from this command; put {junit}, {trx} or {trxdir} in revert_test= in "
                    ".claude/checks for detail.")
     report(groups, others, header, footer + ")", a.ci)
+    if a.json:
+        write_json(a.json, base, mb, head, groups, product)
     log(root, base, groups, secs, a.ci)
     return 1 if a.ci and groups["unguarded"] else 0
 
