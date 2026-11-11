@@ -30,6 +30,7 @@ public class ChangelogTests
     [Fact]
     public void ReversionPutsTheKindsInKeepAChangelogsOrder()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         var text = "## Unreleased\n\n### Notes\n\n- n\n\n### Security\n\n- s\n\n### Fixed\n\n- f\n\n### Removed\n\n- r\n\n" +
             "## 1.0.0.2 - 2026-11-01\n\n### Deprecated\n\n- d\n\n### Changed\n\n- c\n\n### Added\n\n- a\n";
         Assert.Equal(
@@ -42,6 +43,7 @@ public class ChangelogTests
     [Fact]
     public void ReversionLeavesALaterSectionOfTheSameVersionAlone()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         var text = "## Unreleased\n\n- new\n\n## 1.0.0.2 - 2026-11-01\n\n- old\n\n## 1.0.0.1 - 2026-10-01\n\n## 1.0.0.2 - 2026-09-01\n\n- older\n";
         Assert.Equal(
             $"## Unreleased\n\n{Heading}\n\n- old\n- new\n\n## 1.0.0.1 - 2026-10-01\n\n## 1.0.0.2 - 2026-09-01\n\n- older\n",
@@ -51,6 +53,7 @@ public class ChangelogTests
     [Fact]
     public void AChangelogWithoutAFinalNewlineKeepsItsLastCharacterAndGainsNoNewline()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Assert.Equal(
             $"## Unreleased\n\n{Heading}\n\n- old\n- new",
             Changelog.Reversion("## Unreleased\n\n- new\n\n## 1.0.0.2 - 2026-11-01\n\n- old", "1.0.0.2", Heading));

@@ -55,6 +55,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void SayMyNameAlreadyMatchesTheStandard()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         var github = new FakeGitHub(SayMyName());
         var setup = Setup(github, check: true);
 
@@ -82,6 +83,7 @@ public sealed class SetupRepoTests : IDisposable
 
     [Fact]
     public void TheStandardRulesetProtectsMainLikeSayMyName() =>
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Assert.True(Json.Matches(Fixture("ruleset.json")["conditions"], SetupRepo.DesiredRuleset()["conditions"]));
 
     [Fact]
@@ -104,6 +106,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void ANewRepoReportsEachChange()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         var setup = Setup(new FakeGitHub(NewRepo()));
 
         setup.ApplyGitHub();
@@ -125,6 +128,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void CheckModeReportsWhatWouldBeUpdated()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         var responses = SayMyName();
         responses[$"repos/{Repo}/rulesets/26000382"]["enforcement"] = "disabled";
         responses[$"repos/{Repo}"]["delete_branch_on_merge"] = true;
@@ -152,6 +156,7 @@ public sealed class SetupRepoTests : IDisposable
     [InlineData(true)]
     public void AnExistingRulesetGetsNoPackageAccessReminder(bool rulesetDiffers)
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         var responses = SayMyName();
         if (rulesetDiffers)
         {
@@ -231,6 +236,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void ALabelWithTheWrongColourIsUpdatedByItsOwnName()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         var responses = SayMyName();
         var label = responses[$"repos/{Repo}/labels?per_page=100"].AsArray().Single(l => (string?)l!["name"] == "no-changelog")!;
         label["name"] = "No-Changelog";
@@ -275,6 +281,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void LocalFilesAreCreatedOnceAndExcluded()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Directory.CreateDirectory(Path.GetDirectoryName(Exclude)!);
         File.WriteAllText(Exclude, "# git's default comment\n.claude/worktrees/");
 
@@ -307,6 +314,7 @@ public sealed class SetupRepoTests : IDisposable
     [InlineData(null, "\n")]
     public void TheExcludedPathsAreAppendedAfterOneBlankLine(string? existing, string before)
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Directory.CreateDirectory(Path.GetDirectoryName(Exclude)!);
         if (existing is not null)
         {
@@ -352,5 +360,6 @@ public sealed class SetupRepoTests : IDisposable
     [InlineData("""{"a":null}""", """{"a":null}""", true)]
     [InlineData("""{"a":[1]}""", """{"a":{"0":1}}""", false)]
     public void JsonMatching(string desired, string actual, bool matches) =>
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Assert.Equal(matches, Json.Matches(JsonNode.Parse(desired), JsonNode.Parse(actual)));
 }

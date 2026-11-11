@@ -31,6 +31,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void DeployClaimsAndCopiesEverything()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Assert.Equal(0, From("/repo/a").Deploy(Build, "MyPlugin", Details));
 
         Assert.Equal("plugin", File.ReadAllText(Path.Combine(DevDir, "MyPlugin.dll")));
@@ -48,6 +49,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void AStaleTempFileFromAnInterruptedCopyIsOverwritten()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Directory.CreateDirectory(DevDir);
         File.WriteAllText(Path.Combine(DevDir, ".MyPlugin.dll.tmp"), "half a copy");
 
@@ -60,6 +62,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void AnotherCheckoutCantDeployOrRelease()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         From("/repo/a").Deploy(Build, "MyPlugin", Details);
         File.WriteAllText(Path.Combine(Build, "MyPlugin.dll"), "other build");
 
@@ -82,6 +85,7 @@ public sealed class DevPluginTests : IDisposable
     [InlineData("branch=main\ncommit=abc1234\n", 1)]
     public void TheClaimOwnerIsItsCheckoutLine(string info, int exitCode)
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Directory.CreateDirectory(Path.GetDirectoryName(Info)!);
         File.WriteAllText(Info, info);
 
@@ -91,6 +95,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void TheHolderRedeploysAndReleases()
     {
+        // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         From("/repo/a").Deploy(Build, "MyPlugin", Details);
         File.WriteAllText(Path.Combine(Build, "MyPlugin.dll"), "new build");
 
