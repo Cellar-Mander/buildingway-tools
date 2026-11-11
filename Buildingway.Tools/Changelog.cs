@@ -11,7 +11,14 @@ internal static class Changelog
 
     private static bool IsVersionHeading(string line) => line.StartsWith("## ", StringComparison.Ordinal);
 
-    private static string[] Lines(string text) => text.Split('\n');
+    private static string[] Lines(string text) => Lf(text).Split('\n');
+
+    // A CRLF file (Windows, core.autocrlf, no .gitattributes) is edited as LF and written back as CRLF
+    private static bool IsCrlf(string text) => text.Contains("\r\n", StringComparison.Ordinal);
+
+    private static string Lf(string text) => text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static string Restore(string edited, bool crlf) => crlf ? edited.Replace("\n", "\r\n", StringComparison.Ordinal) : edited;
 
     /// <summary>True when a non-blank line (an entry or a ### heading) is under Unreleased.</summary>
     public static bool HasUnreleasedEntries(string text)
@@ -49,8 +56,9 @@ internal static class Changelog
     /// <summary>Puts heading right below "## Unreleased", so its entries become that version's.</summary>
     public static string DateUnreleased(string text, string heading)
     {
+        var crlf = IsCrlf(text);
         var output = new StringBuilder();
-        var lines = SplitKeepingFinalNewline(text, out var finalNewline);
+        var lines = SplitKeepingFinalNewline(Lf(text), out var finalNewline);
         foreach (var line in lines)
         {
             output.Append(line).Append('\n');
@@ -59,7 +67,7 @@ internal static class Changelog
                 output.Append('\n').Append(heading).Append('\n');
             }
         }
-        return Finish(output, finalNewline);
+        return Restore(Finish(output, finalNewline), crlf);
     }
 
     /// <summary>
@@ -70,6 +78,7 @@ internal static class Changelog
     /// </summary>
     public static string Reversion(string text, string oldVersion, string heading)
     {
+        var crlf = IsCrlf(text);
         var oldPrefix = $"## {oldVersion} - ";
         var output = new StringBuilder();
         var released = new Dictionary<string, List<string>>();
@@ -78,7 +87,7 @@ internal static class Changelog
         var state = "";
         var key = "";
 
-        var lines = SplitKeepingFinalNewline(text, out var finalNewline);
+        var lines = SplitKeepingFinalNewline(Lf(text), out var finalNewline);
         foreach (var line in lines)
         {
             if (IsVersionHeading(line))
@@ -130,7 +139,7 @@ internal static class Changelog
         {
             WriteMerged();
         }
-        return Finish(output, finalNewline);
+        return Restore(Finish(output, finalNewline), crlf);
 
         void WriteMerged()
         {
