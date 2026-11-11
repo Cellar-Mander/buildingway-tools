@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Keeps Buildingway.Tools/Scripts in step with ebd's bin/, as listed in Scripts/SOURCES.
+# ebd is private; it publishes the scripts listed there to the public mirror
+# Cellar-Mander/ebd-scripts: bin/<script> and a MANIFEST of "ebd <commit>" then "<script> <sha256>".
+#
+#   ebd-scripts check
+#       Fails if a copy's SHA-256 differs from the one SOURCES pins. SOURCES lines are
+#       "<script> ebd <commit> <sha256>"; blank lines and lines starting with # are comments.
+#   ebd-scripts check --latest <mirror-clone>
+#       Also fails if a pin differs from the mirror's or the script has left ebd.
+#   ebd-scripts sync <mirror-clone>
+#       Recopies each listed script from the mirror and pins it there. A script that has left
+#       ebd is deleted with its SOURCES line and its csproj EmbeddedResource.
+#
+# Run from the repository root.
+set -euo pipefail
+
+scripts=Buildingway.Tools/Scripts
+sources=$scripts/SOURCES
+csproj=Buildingway.Tools/Buildingway.Tools.csproj
+entry='^([A-Za-z0-9._-]+)[[:space:]]+ebd[[:space:]]+([0-9a-f]{7,40})[[:space:]]+([0-9a-f]{64})[[:space:]]*$'
+
+usage() { echo "usage: ebd-scripts check [--latest <mirror-clone>] | sync <mirror-clone>" >&2; exit 2; }
+
+hash() { sha256sum "$1" | cut -d' ' -f1; }
+
+# Fills manifest[name]=sha256 and sets ebd_commit from <mirror>/MANIFEST
+declare -A manifest
+read_manifest() {
+  local file=$1/MANIFEST name sum
+  [[ -f $file ]] || { echo "::error::$file is missing" >&2; exit 1; }
+  read -r name ebd_commit < "$file"
+  [[ $name == ebd && $ebd_commit =~ ^[0-9a-f]{7,40}$ ]] || { echo "::error::$file doesn't start with 'ebd <commit>'" >&2; exit 1; }
+  ebd_commit=${ebd_commit:0:7}
+  while read -r name sum; do
+    [[ $sum =~ ^[0-9a-f]{64}$ ]] && manifest[$name]=$sum
+  done < <(tail -n +2 "$file")
+  return 0
+}
+
+check() {
+  local mirror=${1-} drift=0 line name sum
+  [[ -n $mirror ]] && read_manifest "$mirror"
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+    if [[ ! $line =~ $entry ]]; then
+      echo "::error file=$sources::can't read '$line'; want <script> ebd <commit> <sha256>"; drift=1
+      continue
+    fi
+    name=${BASH_REMATCH[1]} sum=${BASH_REMATCH[3]}
+    if [[ ! -f $scripts/$name ]]; then
+      echo "::error file=$sources::$name is listed but $scripts/$name is missing"; drift=1
+    elif [[ $(hash "$scripts/$name") != "$sum" ]]; then
+      echo "::error file=$scripts/$name::$name differs from the copy SOURCES pins; change it in ebd, not here"; drift=1
+    fi
+    if [[ -n $mirror ]]; then
+      if [[ -z ${manifest[$name]-} ]]; then
+        echo "::error file=$scripts/$name::$name has left ebd (not in the mirror at ebd $ebd_commit)"; drift=1
+      elif [[ ${manifest[$name]} != "$sum" ]]; then
+        echo "::error file=$scripts/$name::$name differs from ebd's latest ($ebd_commit)"; drift=1
+      fi
+    fi
+  done < "$sources"
+  if [[ $drift == 0 ]]; then
+    if [[ -n $mirror ]]; then echo "Scripts match their pins and ebd $ebd_commit"; else echo "Scripts match their pins"; fi
+  fi
+  return "$drift"
+}
+
+sync() {
+  local mirror=$1 line name sum out
+  read_manifest "$mirror"
+  out=$(mktemp)
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ $line =~ $entry ]]; then
+      name=${BASH_REMATCH[1]}
+      sum=${manifest[$name]-}
+      if [[ -n $sum ]]; then
+        [[ $(hash "$mirror/bin/$name") == "$sum" ]] ||
+          { echo "::error::mirror's bin/$name doesn't match its MANIFEST" >&2; rm -f "$out"; exit 1; }
+        cp "$mirror/bin/$name" "$scripts/$name"
+        printf '%-14s ebd %s  %s\n' "$name" "$ebd_commit" "$sum" >> "$out"
+        echo "updated $name to ebd $ebd_commit"
+      else
+        rm -f "$scripts/$name"
+        sed -i "/<EmbeddedResource Include=\"Scripts\\\\$name\"/d" "$csproj"
+        echo "removed $name (not in ebd $ebd_commit)"
+      fi
+    else
+      echo "$line" >> "$out"
+    fi
+  done < "$sources"
+  mv "$out" "$sources"
+}
+
+case ${1-} in
+  check)
+    case $# in
+      1) check ;;
+      3) [[ $2 == --latest ]] || usage; check "$3" ;;
+      *) usage ;;
+    esac ;;
+  sync) [[ $# -eq 2 ]] || usage; sync "$2" ;;
+  *) usage ;;
+esac

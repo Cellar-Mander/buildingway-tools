@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Tests for ebd-scripts against a throwaway mirror and copy of this repo's layout.
+set -euo pipefail
+
+tool=$(cd "$(dirname "$0")" && pwd)/ebd-scripts
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+failures=0
+
+fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
+expect_rc() { # <want> <cmd...>
+  local want=$1 rc=0; shift
+  "$@" > "$work/out" 2>&1 || rc=$?
+  [[ $rc == "$want" ]] || { fail "$* exited $rc, want $want"; cat "$work/out"; }
+}
+sum() { printf '%s\n' "$1" | sha256sum | cut -d' ' -f1; }
+
+a1=$(sum a1) b1=$(sum b1) a2=$(sum a2)
+old=1111111 new=2222222aaaabbbbccccddddeeeeffff000011112
+
+# The mirror at ebd $new: a changed, b gone, c new (not listed here, so ignored)
+mirror=$work/mirror
+mkdir -p "$mirror/bin"
+echo a2 > "$mirror/bin/a"; echo c1 > "$mirror/bin/c"
+printf 'ebd %s\na %s\nc %s\n' "$new" "$a2" "$(sum c1)" > "$mirror/MANIFEST"
+
+repo=$work/repo
+mkdir -p "$repo/Buildingway.Tools/Scripts"
+cd "$repo"
+setup() {
+  echo a1 > Buildingway.Tools/Scripts/a; echo b1 > Buildingway.Tools/Scripts/b
+  printf '# Copies of ebd'"'"'s bin/.\n\na  ebd %s  %s\nb  ebd %s  %s\n' "$old" "$a1" "$old" "$b1" > Buildingway.Tools/Scripts/SOURCES
+  cat > Buildingway.Tools/Buildingway.Tools.csproj <<'EOF'
+    <EmbeddedResource Include="Scripts\a" LogicalName="a" />
+    <EmbeddedResource Include="Scripts\b" LogicalName="b" />
+EOF
+}
+
+setup
+expect_rc 0 "$tool" check
+expect_rc 1 "$tool" check --latest "$mirror"
+grep -q "a differs from ebd's latest (2222222)" "$work/out" || fail "--latest didn't report a"
+grep -q "b has left ebd" "$work/out" || fail "--latest didn't report b leaving"
+
+echo edited > Buildingway.Tools/Scripts/a
+expect_rc 1 "$tool" check
+grep -q "a differs from the copy SOURCES pins" "$work/out" || fail "edited a not reported"
+
+setup
+rm Buildingway.Tools/Scripts/b
+expect_rc 1 "$tool" check
+grep -q "b is listed but" "$work/out" || fail "missing copy not reported"
+
+setup
+echo "a ebd $old" >> Buildingway.Tools/Scripts/SOURCES
+expect_rc 1 "$tool" check
+grep -q "can't read 'a ebd $old'" "$work/out" || fail "line without a hash not reported"
+
+setup
+expect_rc 0 "$tool" sync "$mirror"
+[[ $(cat Buildingway.Tools/Scripts/a) == a2 ]] || fail "sync didn't update a"
+[[ ! -e Buildingway.Tools/Scripts/b ]] || fail "sync didn't delete b"
+[[ ! -e Buildingway.Tools/Scripts/c ]] || fail "sync copied unlisted c"
+grep -q 'Scripts\\b' Buildingway.Tools/Buildingway.Tools.csproj && fail "sync left b's EmbeddedResource"
+grep -q 'Scripts\\a' Buildingway.Tools/Buildingway.Tools.csproj || fail "sync removed a's EmbeddedResource"
+want=$(printf '# Copies of ebd'"'"'s bin/.\n\na              ebd 2222222  %s' "$a2")
+[[ $(cat Buildingway.Tools/Scripts/SOURCES) == "$want" ]] || { fail "SOURCES after sync:"; cat Buildingway.Tools/Scripts/SOURCES; }
+expect_rc 0 "$tool" check --latest "$mirror"
+
+# A mirror file that doesn't match its MANIFEST is refused, and nothing changes
+setup
+echo tampered > "$mirror/bin/a"
+expect_rc 1 "$tool" sync "$mirror"
+[[ $(cat Buildingway.Tools/Scripts/a) == a1 ]] || fail "sync copied a tampered file"
+grep -q "ebd $old  $b1" Buildingway.Tools/Scripts/SOURCES || fail "refused sync changed SOURCES"
+echo a2 > "$mirror/bin/a"
+
+echo 'not a manifest' > "$mirror/MANIFEST"
+expect_rc 1 "$tool" check --latest "$mirror"
+
+expect_rc 2 "$tool" check --bogus "$mirror"
+expect_rc 2 "$tool" check --latest
+expect_rc 2 "$tool" sync
+
+[[ $failures == 0 ]] && echo "ebd-scripts: all tests passed"
+exit "$((failures > 0))"
