@@ -112,8 +112,27 @@ yet).
 
 `revert-check` and `mutant-triage` are copies of the tools in `Cellar-Mander/ebd`'s `bin/`, at
 the commits in [`Buildingway.Tools/Scripts/SOURCES`](Buildingway.Tools/Scripts/SOURCES); change
-them there and copy them over. They run with `python3` (`python` on Windows); set
+them there, not here. They run with `python3` (`python` on Windows); set
 `BUILDINGWAY_PYTHON` to use another interpreter.
+
+ebd is private, so it publishes these scripts to the public mirror
+[`Cellar-Mander/ebd-scripts`](https://github.com/Cellar-Mander/ebd-scripts) on each push, with a
+`MANIFEST` of the ebd commit and each script's SHA-256. `SOURCES` pins each copy's commit and
+SHA-256, and nothing here needs a credential for ebd.
+
+- CI fails when a copy's SHA-256 differs from its pin.
+- The daily ebd sync workflow fails when a pin differs from the mirror's or a script has left
+  ebd, and opens or updates a PR from the `ebd-sync` branch that recopies them, pins them at
+  ebd's latest and deletes copies of scripts ebd no longer has (and their `EmbeddedResource`;
+  the PR says what else to remove). It starts CI on that branch itself, since PRs opened with
+  `github.token` don't trigger it. Run it by hand from the Actions tab after changing a script
+  in ebd. It needs Settings → Actions → General → "Allow GitHub Actions to create and approve
+  pull requests".
+- Before merging a sync PR, diff the copies against ebd at the commit it names: CI here can only
+  check them against the mirror.
+
+Locally: `.github/scripts/ebd-scripts check [--latest <mirror-clone>]` or
+`.github/scripts/ebd-scripts sync <mirror-clone>`.
 
 ## Releasing this tool
 

@@ -1,3 +1,4 @@
-Copies of ~/Repo/ebd/bin (Cellar-Mander/ebd); update them from there, not here.
-revert-check   ebd 5b505d3
-mutant-triage  ebd bfd6297
+# Copies of Cellar-Mander/ebd's bin/, through the public mirror Cellar-Mander/ebd-scripts; change them in ebd, not here.
+# Each line: script, the ebd commit it was copied at, its SHA-256. .github/scripts/ebd-scripts checks and syncs them.
+revert-check   ebd 5b505d3  9adc147bf6ff1f9cba71fd0cd1fac90617fa9e165ed605ab0e8f3e64cde2751f
+mutant-triage  ebd bfd6297  8e71c60610fc3113d056c382eb96366abbf868f375b57e83e67fc1a7e8f1a76b

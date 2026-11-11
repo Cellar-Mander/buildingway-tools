@@ -7,6 +7,8 @@ on:
   pull_request:
     branches: [ main ]
   workflow_call:
+  # ebd-sync.yml starts CI on its PR's branch: PRs opened with github.token don't trigger it
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -47,6 +49,23 @@ jobs:
         dotnet tool install --tool-path tool --add-source pack Buildingway.Tools --version 0.0.0-dev
         tool/buildingway revert-check --help
         tool/buildingway mutant-triage --help
+
+  # Each copied ebd script must match the SHA-256 Scripts/SOURCES pins; ebd-sync.yml compares
+  # with ebd's latest
+  ebd-scripts:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Test ebd-scripts
+      run: .github/scripts/ebd-scripts.test
+
+    - name: Check against pins
+      run: .github/scripts/ebd-scripts check
 
   lint:
     uses: Cellar-Mander/buildingway-ci/.github/workflows/workflow-lint.yml@95d5f7efba161c33e5cd0eca87d7e5499140c584 # v0.3.0
