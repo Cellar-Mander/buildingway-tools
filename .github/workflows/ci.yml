@@ -50,6 +50,46 @@ jobs:
         tool/buildingway revert-check --help
         tool/buildingway mutant-triage --help
 
+  # Do the PR's new or changed tests fail with its product changes reverted? Uses the tool this PR
+  # builds (the package can't list itself in .config/dotnet-tools.json). Informs only: keep
+  # "revert-check" out of the ruleset's required checks. mutation.yml's kill-report joins the
+  # revert-check artifact (revert-check.json) with the mutation run for the same head commit.
+  revert-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+
+    - name: Install .NET
+      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+      with:
+        dotnet-version: 10.0.x
+
+    # Outside the checkout, so revert-check sees only the PR's files
+    - name: Install the PR's tool
+      run: |
+        dotnet pack Buildingway.Tools -c Release --nologo -o "$RUNNER_TEMP/pack"
+        dotnet tool install --tool-path "$RUNNER_TEMP/tool" --add-source "$RUNNER_TEMP/pack" Buildingway.Tools --version 0.0.0-dev
+
+    - name: Revert check
+      run: >-
+        "$RUNNER_TEMP/tool/buildingway" revert-check --ci --json "$RUNNER_TEMP/revert-check.json" --test-cmd
+        "dotnet build Buildingway.Tools.Tests --nologo -v q && dotnet test Buildingway.Tools.Tests --nologo --no-build --logger \"trx;LogFileName={trx}\""
+
+    # Also when revert-check exits 1 (a test that doesn't guard the change): its verdicts are still valid
+    - name: Upload verdicts
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: revert-check
+        path: ${{ runner.temp }}/revert-check.json
+        if-no-files-found: ignore
+
   # Each copied ebd script must match the SHA-256 Scripts/SOURCES pins; ebd-sync.yml compares
   # with ebd's latest
   ebd-scripts:
