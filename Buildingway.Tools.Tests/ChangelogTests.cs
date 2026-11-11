@@ -26,6 +26,37 @@ public class ChangelogTests
         Assert.Equal($"## Unreleased\n\n{Heading}\n\n- old\n- new\n", Changelog.Reversion(text, "1.0.0.2", Heading));
     }
 
+    // Keep a Changelog's order whatever order the sections came in; others after, as they came
+    [Fact]
+    public void ReversionPutsTheKindsInKeepAChangelogsOrder()
+    {
+        var text = "## Unreleased\n\n### Notes\n\n- n\n\n### Security\n\n- s\n\n### Fixed\n\n- f\n\n### Removed\n\n- r\n\n" +
+            "## 1.0.0.2 - 2026-11-01\n\n### Deprecated\n\n- d\n\n### Changed\n\n- c\n\n### Added\n\n- a\n";
+        Assert.Equal(
+            $"## Unreleased\n\n{Heading}\n\n### Added\n\n- a\n\n### Changed\n\n- c\n\n### Deprecated\n\n- d\n\n" +
+            "### Removed\n\n- r\n\n### Fixed\n\n- f\n\n### Security\n\n- s\n\n### Notes\n\n- n\n",
+            Changelog.Reversion(text, "1.0.0.2", Heading));
+    }
+
+    // Only the section right after Unreleased moves, even if a later heading has the same version
+    [Fact]
+    public void ReversionLeavesALaterSectionOfTheSameVersionAlone()
+    {
+        var text = "## Unreleased\n\n- new\n\n## 1.0.0.2 - 2026-11-01\n\n- old\n\n## 1.0.0.1 - 2026-10-01\n\n## 1.0.0.2 - 2026-09-01\n\n- older\n";
+        Assert.Equal(
+            $"## Unreleased\n\n{Heading}\n\n- old\n- new\n\n## 1.0.0.1 - 2026-10-01\n\n## 1.0.0.2 - 2026-09-01\n\n- older\n",
+            Changelog.Reversion(text, "1.0.0.2", Heading));
+    }
+
+    [Fact]
+    public void AChangelogWithoutAFinalNewlineKeepsItsLastCharacterAndGainsNoNewline()
+    {
+        Assert.Equal(
+            $"## Unreleased\n\n{Heading}\n\n- old\n- new",
+            Changelog.Reversion("## Unreleased\n\n- new\n\n## 1.0.0.2 - 2026-11-01\n\n- old", "1.0.0.2", Heading));
+        Assert.Equal($"## Unreleased\n\n{Heading}\n\n- new", Changelog.DateUnreleased("## Unreleased\n\n- new", Heading));
+    }
+
     [Fact]
     public void ACrlfChangelogIsDatedAndStaysCrlf() =>
         Assert.Equal(Crlf(Fixture("date1.md")), Changelog.DateUnreleased(Crlf(Fixture("in1.md")), Heading));

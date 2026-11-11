@@ -40,6 +40,21 @@ public sealed class DevPluginTests : IDisposable
         // The earlier scripts' format, LF and no BOM, so their checkouts can still read the claim
         Assert.Equal("checkout=/repo/a\n" + Details, File.ReadAllText(Info));
         Assert.Equal((byte)'c', File.ReadAllBytes(Info)[0]);
+        Assert.Equal(
+            $"Deployed to {DevDir}:\n  checkout=/repo/a\n  branch=main\n  commit=abc1234\n  task=e9dfe430\n  deployed=2026-11-05T19:00:00+01:00\n",
+            output.ToString().ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void AStaleTempFileFromAnInterruptedCopyIsOverwritten()
+    {
+        Directory.CreateDirectory(DevDir);
+        File.WriteAllText(Path.Combine(DevDir, ".MyPlugin.dll.tmp"), "half a copy");
+
+        Assert.Equal(0, From("/repo/a").Deploy(Build, "MyPlugin", Details));
+
+        Assert.Equal("plugin", File.ReadAllText(Path.Combine(DevDir, "MyPlugin.dll")));
+        Assert.Empty(Directory.EnumerateFiles(DevDir, "*.tmp"));
     }
 
     [Fact]
@@ -50,10 +65,27 @@ public sealed class DevPluginTests : IDisposable
 
         Assert.Equal(1, From("/repo/b").Deploy(Build, "MyPlugin", Details));
         Assert.Equal("plugin", File.ReadAllText(Path.Combine(DevDir, "MyPlugin.dll")));
-        Assert.Contains("checkout=/repo/a", error.ToString());
-
         Assert.Equal(1, From("/repo/b").Release(force: false));
         Assert.True(File.Exists(Info));
+
+        var claim = "  checkout=/repo/a\n  branch=main\n  commit=abc1234\n  task=e9dfe430\n  deployed=2026-11-05T19:00:00+01:00\n";
+        Assert.Equal(
+            "Refusing to deploy: another checkout is testing in the dev folder.\n" + claim +
+            "Ask whoever holds it to run 'dotnet buildingway dev-plugin release' when they're done.\n" +
+            "Refusing to release: the claim belongs to another checkout.\n" + claim,
+            error.ToString().ReplaceLineEndings("\n"));
+    }
+
+    // The checkout= line is found wherever it is; a claim without one belongs to nobody here
+    [Theory]
+    [InlineData("branch=main\ncheckout=/repo/a\n", 0)]
+    [InlineData("branch=main\ncommit=abc1234\n", 1)]
+    public void TheClaimOwnerIsItsCheckoutLine(string info, int exitCode)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Info)!);
+        File.WriteAllText(Info, info);
+
+        Assert.Equal(exitCode, From("/repo/a").Deploy(Build, "MyPlugin", Details));
     }
 
     [Fact]
@@ -66,7 +98,13 @@ public sealed class DevPluginTests : IDisposable
         Assert.Equal("new build", File.ReadAllText(Path.Combine(DevDir, "MyPlugin.dll")));
         Assert.Contains("def5678", File.ReadAllText(Info));
 
+        output.GetStringBuilder().Clear();
+        From("/repo/a").Status();
+        Assert.StartsWith("Claimed:\n  checkout=/repo/a\n", output.ToString().ReplaceLineEndings("\n"));
+
+        output.GetStringBuilder().Clear();
         Assert.Equal(0, From("/repo/a").Release(force: false));
+        Assert.Equal($"Released {DevDir}\n", output.ToString().ReplaceLineEndings("\n"));
         Assert.False(Directory.Exists(Path.Combine(DevDir, ".claim")));
         Assert.Equal(0, From("/repo/b").Deploy(Build, "MyPlugin", Details));
     }

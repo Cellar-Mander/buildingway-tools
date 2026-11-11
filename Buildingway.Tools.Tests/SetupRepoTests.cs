@@ -62,7 +62,15 @@ public sealed class SetupRepoTests : IDisposable
 
         Assert.Empty(github.Sent);
         Assert.Equal(0, setup.Finish());
-        Assert.DoesNotContain("✗", output.ToString());
+        Assert.Equal(
+            """
+            ✓ ruleset "Protect Main"
+            ✓ merge settings
+            ✓ Actions workflow permissions
+            ✓ label no-changelog
+            ✓ label mutation
+
+            """, output.ToString().ReplaceLineEndings("\n"));
     }
 
     [Fact]
@@ -71,6 +79,10 @@ public sealed class SetupRepoTests : IDisposable
         // The other direction to SayMyNameAlreadyMatchesTheStandard, so a setting can't drop out
         Assert.True(Json.Matches(Fixture("ruleset.json")["rules"], SetupRepo.DesiredRuleset()["rules"]));
     }
+
+    [Fact]
+    public void TheStandardRulesetProtectsMainLikeSayMyName() =>
+        Assert.True(Json.Matches(Fixture("ruleset.json")["conditions"], SetupRepo.DesiredRuleset()["conditions"]));
 
     [Fact]
     public void ANewRepoGetsTheRulesetLabelsAndActionsPermission()
@@ -87,6 +99,68 @@ public sealed class SetupRepoTests : IDisposable
         Assert.True(Json.Matches(ruleset, Fixture("ruleset.json")), "the created ruleset is say-my-name's");
         Assert.Equal(["no-changelog", "mutation"], github.Sent.Skip(2).Select(s => (string)s.Body["name"]!));
         Assert.Contains("Manage Actions access", output.ToString());
+    }
+
+    [Fact]
+    public void ANewRepoReportsEachChange()
+    {
+        var setup = Setup(new FakeGitHub(NewRepo()));
+
+        setup.ApplyGitHub();
+
+        Assert.Equal(0, setup.Finish());
+        Assert.Equal(
+            """
+            → ruleset "Protect Main": create
+            ✓ merge settings
+            → Actions workflow permissions: update
+            → label no-changelog: create
+            → label mutation: create
+              Not checked: if the Buildingway.Tools package is private, give this repo Read under
+              its "Manage Actions access" settings, or CI can't restore the tool.
+
+            """, output.ToString().ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void CheckModeReportsWhatWouldBeUpdated()
+    {
+        var responses = SayMyName();
+        responses[$"repos/{Repo}/rulesets/26000382"]["enforcement"] = "disabled";
+        responses[$"repos/{Repo}"]["delete_branch_on_merge"] = true;
+        responses[$"repos/{Repo}/labels?per_page=100"].AsArray().Single(l => (string?)l!["name"] == "mutation")!["color"] = "000000";
+        var setup = Setup(new FakeGitHub(responses), check: true);
+
+        setup.ApplyGitHub();
+
+        Assert.Equal(1, setup.Finish());
+        Assert.Equal(
+            """
+            ✗ ruleset "Protect Main": would update
+            ✗ merge settings: would update
+            ✓ Actions workflow permissions
+            ✓ label no-changelog
+            ✗ label mutation: would update
+            Run without --check to apply.
+
+            """, output.ToString().ReplaceLineEndings("\n"));
+    }
+
+    // The package-access reminder is for a new repo only
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AnExistingRulesetGetsNoPackageAccessReminder(bool rulesetDiffers)
+    {
+        var responses = SayMyName();
+        if (rulesetDiffers)
+        {
+            responses[$"repos/{Repo}/rulesets/26000382"]["enforcement"] = "disabled";
+        }
+
+        Setup(new FakeGitHub(responses)).ApplyGitHub();
+
+        Assert.DoesNotContain("Manage Actions access", output.ToString());
     }
 
     [Fact]
@@ -169,6 +243,8 @@ public sealed class SetupRepoTests : IDisposable
         Assert.Equal(("PATCH", $"repos/{Repo}/labels/No-Changelog"), (method, path));
         Assert.Equal("no-changelog", (string?)body["new_name"]);
         Assert.Equal("ededed", (string?)body["color"]);
+        // GitHub's label PATCH renames by new_name; name isn't one of its fields
+        Assert.False(body.AsObject().ContainsKey("name"));
     }
 
     [Fact]
@@ -203,17 +279,43 @@ public sealed class SetupRepoTests : IDisposable
         File.WriteAllText(Exclude, "# git's default comment\n.claude/worktrees/");
 
         Local();
+        Assert.Equal(
+            $"""
+            → .claude/checks: create
+            → .worktreeinclude: create
+            → git-excluded local files: add .claude/, .worktreeinclude to {Exclude}
+
+            """, output.ToString().ReplaceLineEndings("\n"));
         var first = File.ReadAllText(Exclude);
         output.GetStringBuilder().Clear();
         Assert.Equal(0, Local(check: true));
 
         Assert.Equal(first, File.ReadAllText(Exclude));
-        Assert.DoesNotContain("✗", output.ToString());
+        Assert.Equal("✓ .claude/checks\n✓ .worktreeinclude\n✓ git-excluded local files\n", output.ToString().ReplaceLineEndings("\n"));
+        Assert.Contains(".claude/checks", File.ReadAllText(Path.Combine(Checkout, ".worktreeinclude")));
         var checks = File.ReadAllText(Path.Combine(Checkout, ".claude", "checks"));
         Assert.Contains("stop=dotnet build SayMyName.slnx", checks);
         Assert.Contains("--mutate \"**/{name}\"", checks);
         Assert.Equal(["# git's default comment", ".claude/worktrees/", "", "# Local dev-process files, kept off the remote (buildingway setup-repo)", ".claude/", ".worktreeinclude"],
             File.ReadAllLines(Exclude));
+    }
+
+    // One blank line before the added block, whatever the file ended in (null: no file yet)
+    [Theory]
+    [InlineData(".claude/worktrees/\n", ".claude/worktrees/\n\n")]
+    [InlineData("", "\n")]
+    [InlineData(null, "\n")]
+    public void TheExcludedPathsAreAppendedAfterOneBlankLine(string? existing, string before)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Exclude)!);
+        if (existing is not null)
+        {
+            File.WriteAllText(Exclude, existing);
+        }
+
+        Local();
+
+        Assert.Equal(before + "# Local dev-process files, kept off the remote (buildingway setup-repo)\n.claude/\n.worktreeinclude\n", File.ReadAllText(Exclude));
     }
 
     [Fact]
@@ -247,6 +349,8 @@ public sealed class SetupRepoTests : IDisposable
     [InlineData("""{"a":1,"b":2}""", """{"a":1}""", false)]
     [InlineData("""{"a":0}""", """{"a":false}""", false)]
     [InlineData("""{"a":"x"}""", """{"a":"X"}""", false)]
+    [InlineData("""{"a":null}""", """{"a":null}""", true)]
+    [InlineData("""{"a":[1]}""", """{"a":{"0":1}}""", false)]
     public void JsonMatching(string desired, string actual, bool matches) =>
         Assert.Equal(matches, Json.Matches(JsonNode.Parse(desired), JsonNode.Parse(actual)));
 }
