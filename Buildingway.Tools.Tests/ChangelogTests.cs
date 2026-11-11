@@ -6,6 +6,9 @@ public class ChangelogTests
 
     private static string Fixture(string name) => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", name));
 
+    // As a CRLF checkout has it (Windows, core.autocrlf, no .gitattributes)
+    private static string Crlf(string text) => text.Replace("\n", "\r\n", StringComparison.Ordinal);
+
     [Theory]
     [InlineData("in1.md", "rev1.md")]
     [InlineData("in2.md", "rev2.md")]
@@ -21,6 +24,22 @@ public class ChangelogTests
     {
         var text = "## Unreleased\n\n- new\n\n## 1.0.0.2 - 2026-11-01\n\n- old\n";
         Assert.Equal($"## Unreleased\n\n{Heading}\n\n- old\n- new\n", Changelog.Reversion(text, "1.0.0.2", Heading));
+    }
+
+    [Fact]
+    public void ACrlfChangelogIsDatedAndStaysCrlf() =>
+        Assert.Equal(Crlf(Fixture("date1.md")), Changelog.DateUnreleased(Crlf(Fixture("in1.md")), Heading));
+
+    [Fact]
+    public void ACrlfChangelogIsReversionedAndStaysCrlf() =>
+        Assert.Equal(Crlf(Fixture("rev1.md")), Changelog.Reversion(Crlf(Fixture("in1.md")), "1.0.0.2", Heading));
+
+    [Fact]
+    public void ACrlfChangelogsUnreleasedSectionIsFound()
+    {
+        var text = Crlf("## Unreleased\n\n- entry\n\n## 1.0.0.2 - 2026-11-01\n");
+        Assert.True(Changelog.HasUnreleasedEntries(text));
+        Assert.True(Changelog.NextSectionIs(text, "1.0.0.2"));
     }
 
     [Theory]
