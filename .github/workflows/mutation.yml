@@ -1,0 +1,21 @@
+name: Mutation
+
+# Advisory: Stryker.NET reports which plausible faults the tests would miss. No score threshold;
+# keep "mutation / mutation" and "mutation / kill-report" out of required checks. Label a PR
+# "mutation" for a full run instead of only the changed code.
+on:
+  pull_request:
+    types: [ opened, synchronize, reopened, labeled ]
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    uses: Cellar-Mander/buildingway-ci/.github/workflows/mutation.yml@f9368131721c090fc548fb3f9200a0bc0339a11d # v0.6.0
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    with:
+      test-project: Buildingway.Tools.Tests
