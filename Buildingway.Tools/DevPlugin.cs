@@ -162,14 +162,17 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
         }
         try
         {
+            // Stryker disable once Conditional : the other platform's call throws DllNotFoundException and falls back to Directory.CreateDirectory, which differs only when two deploys race for the claim
             return OperatingSystem.IsWindows() ? CreateDirectoryWin32(Claim) : Mkdir(Claim, Convert.ToInt32("755", 8)) == 0;
         }
+        // Stryker disable Equality,Statement,Boolean,Block : only reached where neither libc's mkdir nor kernel32's CreateDirectoryW exists, and the tests run on Linux and Windows
         catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
         {
             // Not atomic, but only where neither call exists
             Directory.CreateDirectory(Claim);
             return true;
         }
+        // Stryker restore Equality,Statement,Boolean,Block
     }
 
     [DllImport("libc", EntryPoint = "mkdir", SetLastError = true)]
@@ -183,9 +186,12 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
     {
         if (!File.Exists(ClaimInfo))
         {
+            // Stryker disable once String : the owner is only compared with checkout, a full path, which is never "Stryker was here!" or another made-up text
             return "";
         }
-        return File.ReadLines(ClaimInfo).FirstOrDefault(l => l.StartsWith("checkout=", StringComparison.Ordinal))?[9..] ?? "";
+        var line = File.ReadLines(ClaimInfo).FirstOrDefault(l => l.StartsWith("checkout=", StringComparison.Ordinal));
+        // Stryker disable once String : as above, for a claim without a checkout= line
+        return line?[9..] ?? "";
     }
 
     private void PrintClaim(TextWriter writer)

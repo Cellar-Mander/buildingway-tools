@@ -79,12 +79,15 @@ internal static class Changelog
     public static string Reversion(string text, string oldVersion, string heading)
     {
         var crlf = IsCrlf(text);
+        // Stryker disable once String : callers only pass text whose section after Unreleased is oldVersion's (Release checks NextSectionIs first), so "" matches the same heading
         var oldPrefix = $"## {oldVersion} - ";
         var output = new StringBuilder();
         var released = new Dictionary<string, List<string>>();
         var added = new Dictionary<string, List<string>>();
         var order = new List<string>();
+        // Stryker disable once String : state is only compared with "unreleased", "old" and "after", so any other start value acts the same
         var state = "";
+        // Stryker disable once String : key is set to "" at Unreleased, before any entry is filed under it
         var key = "";
 
         var lines = SplitKeepingFinalNewline(Lf(text), out var finalNewline);
@@ -96,6 +99,7 @@ internal static class Changelog
                 {
                     WriteMerged();
                     output.Append('\n');
+                    // Stryker disable once String : "after" only has to differ from "unreleased" and "old"
                     state = "after";
                 }
                 else if (state == "unreleased" && line.StartsWith(oldPrefix, StringComparison.Ordinal))
@@ -175,10 +179,7 @@ internal static class Changelog
 
     private static string Finish(StringBuilder output, bool finalNewline)
     {
-        if (!finalNewline && output.Length > 0 && output[^1] == '\n')
-        {
-            output.Length--;
-        }
-        return output.ToString();
+        var text = output.ToString();
+        return !finalNewline && text.EndsWith('\n') ? text[..^1] : text;
     }
 }
