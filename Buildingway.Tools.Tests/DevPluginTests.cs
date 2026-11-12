@@ -156,6 +156,7 @@ public sealed class DevPluginTests : IDisposable
     [InlineData("deploy-now")]
     public void BadArgumentsPrintUsageWithTheDevFolder(params string[] args)
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("MyPlugin");
 
         Assert.Equal(2, Run(repo, args));
@@ -180,6 +181,7 @@ public sealed class DevPluginTests : IDisposable
     [InlineData(null)]
     public void DeployBuildsAndClaimsForThisCheckout(string? task)
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("MyPlugin");
         var commit = repo.Git.Output("rev-parse", "--short", "HEAD");
 
@@ -196,6 +198,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void StatusAndReleaseGoToThisCheckoutsClaim()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("MyPlugin");
         Run(repo, "deploy");
         output.GetStringBuilder().Clear();
@@ -211,6 +214,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void ReleaseNeedsForceForAnotherCheckoutsClaim()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("MyPlugin");
         From("/repo/other").Deploy(Build, "MyPlugin", Details);
 
@@ -223,6 +227,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void ClaimDetailsNameTheBranchCommitTaskAndTime()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("MyPlugin");
         var commit = repo.Git.Output("rev-parse", "--short", "HEAD");
         var now = new DateTimeOffset(2026, 11, 5, 19, 0, 7, TimeSpan.FromHours(1));
@@ -241,6 +246,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void BuildIsAnX64DebugBuildOfThePluginProject()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("MyPlugin");
 
         var (args, output) = DevPlugin.BuildCommand(repo.Plugin);
@@ -259,6 +265,7 @@ public sealed class DevPluginTests : IDisposable
     [InlineData(null, true, "appdata/XIVLauncher/devPlugins/MyPlugin")]
     public void TheDevFolderIsTheVariableOrTheLaunchersFolder(string? set, bool windows, string expected)
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         Assert.Equal(
             expected.Replace('/', Path.DirectorySeparatorChar),
             DevPlugin.DefaultDevDir("MyPlugin", set, windows, "appdata", "home").Replace('/', Path.DirectorySeparatorChar));
@@ -267,6 +274,7 @@ public sealed class DevPluginTests : IDisposable
     [Fact]
     public void TheDevFolderComesFromThePluginsVariable()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         // A plugin name no other test uses, since the variable is process-wide
         using var repo = new PluginRepo("DevDirProbe");
         var launcher = OperatingSystem.IsWindows()

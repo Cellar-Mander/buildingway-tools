@@ -373,6 +373,7 @@ public sealed class SetupRepoTests : IDisposable
     [InlineData("--name", "SayMyName", "--repo")]
     public void BadArgumentsPrintUsageBeforeLookingAtTheCheckout(params string[] args)
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         var github = new FakeGitHub([]);
 
         Assert.Equal(2, SetupRepo.Run(args, () => throw new InvalidOperationException("looked up the checkout"), github, output, error));
@@ -388,6 +389,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void RepoAndNameComeFromThePluginProject()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("SayMyName", $"https://github.com/{Repo}");
         var github = new FakeGitHub(SayMyName());
 
@@ -409,6 +411,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void AGivenRepoWinsAndTheNameComesFromThePluginProject()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         // FakeGitHub knows only say-my-name, so using the csproj's repo would throw
         using var repo = new PluginRepo("SayMyName", "https://github.com/Owner/other");
 
@@ -420,6 +423,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void AGivenNameWinsAndTheRepoComesFromThePluginProject()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("Other", $"https://github.com/{Repo}");
 
         Assert.Equal(0, SetupRepo.Run(["--name", "SayMyName"], () => repo.Git, new FakeGitHub(SayMyName()), output, error));
@@ -430,6 +434,7 @@ public sealed class SetupRepoTests : IDisposable
     [Fact]
     public void GivenRepoAndNameNeedNoPluginProjectAndCheckChangesNothing()
     {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("Other", "https://github.com/Owner/other");
         File.Delete(Path.Combine(repo.Top, "Other", "Other.csproj"));
 
