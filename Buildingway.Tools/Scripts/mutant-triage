@@ -682,11 +682,13 @@ def killer_matches(killer, test):
 
 
 def changed_scope(rc, files):
-    """Changed lines per mutated product file, deletion-only hunks in them, and product files the run didn't mutate."""
+    """Changed lines per mutated file, deletion-only hunks in them, and product files the run didn't mutate. A mutated
+    file revert-check leaves out of its product list (it never reverts .claude/ or .github/) still counts."""
     lines, deleted, unmutated = {}, [], []
-    for entry in rc.get("product") or []:
-        path = entry["path"]
-        if entry["status"] == "D" or path not in files:
+    product = [(e["path"], e["status"]) for e in rc.get("product") or []]
+    listed = {p for p, _ in product}
+    for path, status in product + [(f, "M") for f in sorted(files) if f not in listed]:
+        if status == "D" or path not in files:
             unmutated.append(path)
             continue
         changed, gone = hunks(git("diff", "-U0", "--no-ext-diff", rc["merge_base"], "--", path))
