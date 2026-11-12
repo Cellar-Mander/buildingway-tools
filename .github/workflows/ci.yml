@@ -108,4 +108,4 @@ jobs:
       run: .github/scripts/ebd-scripts check
 
   lint:
-    uses: Cellar-Mander/buildingway-ci/.github/workflows/workflow-lint.yml@95d5f7efba161c33e5cd0eca87d7e5499140c584 # v0.3.0
+    uses: Cellar-Mander/buildingway-ci/.github/workflows/workflow-lint.yml@33d7ad3178c566401ee9e3d347b3f62dbecf0a11 # v0.4.0
