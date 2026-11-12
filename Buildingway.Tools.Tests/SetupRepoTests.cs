@@ -362,4 +362,86 @@ public sealed class SetupRepoTests : IDisposable
     public void JsonMatching(string desired, string actual, bool matches) =>
         // revert-check: not revert-sensitive (kills a surviving mutant: pins existing behaviour)
         Assert.Equal(matches, Json.Matches(JsonNode.Parse(desired), JsonNode.Parse(actual)));
+
+    private readonly StringWriter error = new();
+
+    [Theory]
+    [InlineData("--force")]
+    [InlineData("--check", "extra")]
+    [InlineData("--repo")]
+    [InlineData("--check", "--name")]
+    [InlineData("--name", "SayMyName", "--repo")]
+    public void BadArgumentsPrintUsageBeforeLookingAtTheCheckout(params string[] args)
+    {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
+        var github = new FakeGitHub([]);
+
+        Assert.Equal(2, SetupRepo.Run(args, () => throw new InvalidOperationException("looked up the checkout"), github, output, error));
+
+        Assert.Empty(github.Sent);
+        Assert.Equal("", output.ToString());
+        Assert.StartsWith(
+            "Usage: dotnet buildingway setup-repo [--check] [--repo owner/name] [--name PluginName]\n\n",
+            error.ToString().ReplaceLineEndings("\n"));
+        Assert.EndsWith("Repo and name come from the plugin's csproj (<RepoUrl>, file name) unless given.\n", error.ToString().ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void RepoAndNameComeFromThePluginProject()
+    {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
+        using var repo = new PluginRepo("SayMyName", $"https://github.com/{Repo}");
+        var github = new FakeGitHub(SayMyName());
+
+        Assert.Equal(0, SetupRepo.Run([], () => repo.Git, github, output, error));
+
+        // say-my-name's settings already match, so only the local files change
+        Assert.Empty(github.Sent);
+        foreach (var (path, content) in SetupRepo.LocalFiles("SayMyName"))
+        {
+            Assert.Equal(content, File.ReadAllText(Path.Combine(repo.Top, path)));
+        }
+        // The exclude file is git's own, found through the checkout
+        Assert.Subset(File.ReadAllLines(Path.Combine(repo.Top, ".git", "info", "exclude")).ToHashSet(), SetupRepo.ExcludedPaths.ToHashSet());
+        Assert.StartsWith("✓ ruleset \"Protect Main\"\n", output.ToString().ReplaceLineEndings("\n"));
+        Assert.Contains("→ .claude/checks: create\n", output.ToString().ReplaceLineEndings("\n"));
+        Assert.Equal("", error.ToString());
+    }
+
+    [Fact]
+    public void AGivenRepoWinsAndTheNameComesFromThePluginProject()
+    {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
+        // FakeGitHub knows only say-my-name, so using the csproj's repo would throw
+        using var repo = new PluginRepo("SayMyName", "https://github.com/Owner/other");
+
+        Assert.Equal(0, SetupRepo.Run(["--repo", Repo], () => repo.Git, new FakeGitHub(SayMyName()), output, error));
+
+        Assert.Equal(SetupRepo.LocalFiles("SayMyName")[0].Content, File.ReadAllText(Path.Combine(repo.Top, ".claude", "checks")));
+    }
+
+    [Fact]
+    public void AGivenNameWinsAndTheRepoComesFromThePluginProject()
+    {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
+        using var repo = new PluginRepo("Other", $"https://github.com/{Repo}");
+
+        Assert.Equal(0, SetupRepo.Run(["--name", "SayMyName"], () => repo.Git, new FakeGitHub(SayMyName()), output, error));
+
+        Assert.Equal(SetupRepo.LocalFiles("SayMyName")[0].Content, File.ReadAllText(Path.Combine(repo.Top, ".claude", "checks")));
+    }
+
+    [Fact]
+    public void GivenRepoAndNameNeedNoPluginProjectAndCheckChangesNothing()
+    {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
+        using var repo = new PluginRepo("Other", "https://github.com/Owner/other");
+        File.Delete(Path.Combine(repo.Top, "Other", "Other.csproj"));
+
+        Assert.Equal(1, SetupRepo.Run(["--check", "--repo", Repo, "--name", "SayMyName"], () => repo.Git, new FakeGitHub(SayMyName()), output, error));
+
+        Assert.False(File.Exists(Path.Combine(repo.Top, ".claude", "checks")));
+        Assert.Contains("✗ .claude/checks: would create\n", output.ToString().ReplaceLineEndings("\n"));
+        Assert.EndsWith("Run without --check to apply.\n", output.ToString().ReplaceLineEndings("\n"));
+    }
 }
