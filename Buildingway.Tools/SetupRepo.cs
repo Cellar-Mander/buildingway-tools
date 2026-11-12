@@ -21,7 +21,10 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
 
     private bool changed;
 
-    public static int Run(string[] args)
+    public static int Run(string[] args) => Run(args, Git.FromCurrentDirectory, new GhCli(), Console.Out, Console.Error);
+
+    /// <param name="findGit">The checkout, looked up only once the arguments are valid.</param>
+    public static int Run(string[] args, Func<Git> findGit, IGitHub github, TextWriter output, TextWriter error)
     {
         string? repo = null, name = null;
         var check = false;
@@ -39,7 +42,7 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
                     name = args[++i];
                     break;
                 default:
-                    Console.Error.WriteLine("""
+                    error.WriteLine("""
                         Usage: dotnet buildingway setup-repo [--check] [--repo owner/name] [--name PluginName]
 
                         Sets the GitHub ruleset, merge settings, Actions permissions and labels a plugin repo
@@ -51,14 +54,14 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
                     return 2;
             }
         }
-        var git = Git.FromCurrentDirectory();
+        var git = findGit();
         if (repo is null || name is null)
         {
             var plugin = PluginProject.Find(git.Top);
             repo ??= plugin.Repo;
             name ??= plugin.Name;
         }
-        var setup = new SetupRepo(new GhCli(), repo, name, Console.Out, check);
+        var setup = new SetupRepo(github, repo, name, output, check);
         setup.ApplyGitHub();
         setup.ApplyLocal(git.Top, git.Output("rev-parse", "--path-format=absolute", "--git-path", "info/exclude"));
         return setup.Finish();

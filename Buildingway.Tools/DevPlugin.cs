@@ -14,31 +14,42 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
 
     private string ClaimInfo => Path.Combine(Claim, "info");
 
-    public static string DefaultDevDir(PluginProject plugin)
+    public static string DefaultDevDir(PluginProject plugin) => DefaultDevDir(
+        plugin.Name,
+        Environment.GetEnvironmentVariable(plugin.DevDirVariable),
+        OperatingSystem.IsWindows(),
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+
+    /// <param name="set">The plugin's dev folder variable, which wins when set.</param>
+    public static string DefaultDevDir(string pluginName, string? set, bool windows, string appData, string home)
     {
-        var set = Environment.GetEnvironmentVariable(plugin.DevDirVariable);
         if (!string.IsNullOrEmpty(set))
         {
             return set;
         }
         // XIVLauncher's folder on Windows, XIVLauncher.Core's elsewhere
-        var root = OperatingSystem.IsWindows()
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "XIVLauncher")
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".xlcore");
-        return Path.Combine(root, "devPlugins", plugin.Name);
+        var root = windows ? Path.Combine(appData, "XIVLauncher") : Path.Combine(home, ".xlcore");
+        return Path.Combine(root, "devPlugins", pluginName);
     }
 
     public static int Run(string[] args)
     {
         var git = Git.FromCurrentDirectory();
         var plugin = PluginProject.Find(git.Top);
-        var dev = new DevPlugin(DefaultDevDir(plugin), git.Top, Console.Out, Console.Error);
+        return Run(args, git, plugin, DefaultDevDir(plugin), Build, Console.Out, Console.Error);
+    }
+
+    /// <param name="build">Builds the plugin and returns its output folder.</param>
+    public static int Run(string[] args, Git git, PluginProject plugin, string devDir, Func<PluginProject, string> build, TextWriter output, TextWriter error)
+    {
+        var dev = new DevPlugin(devDir, git.Top, output, error);
         switch (args)
         {
             case ["deploy"]:
             case ["deploy", _]:
-                var output = Build(plugin);
-                return dev.Deploy(output, plugin.Name, ClaimDetails(git, args.ElementAtOrDefault(1) ?? ""));
+                var built = build(plugin);
+                return dev.Deploy(built, plugin.Name, ClaimDetails(git, args.ElementAtOrDefault(1) ?? "", DateTimeOffset.Now));
             case ["status"]:
                 dev.Status();
                 return 0;
@@ -47,7 +58,7 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
             case ["release", "--force"]:
                 return dev.Release(force: true);
             default:
-                Console.Error.WriteLine($"""
+                error.WriteLine($"""
                     Usage: dotnet buildingway dev-plugin deploy [task-ref]   build, claim the dev folder and copy the plugin in
                            dotnet buildingway dev-plugin status              show who holds the dev folder
                            dotnet buildingway dev-plugin release [--force]   free the dev folder (--force: even if another checkout holds it)
@@ -63,13 +74,19 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
     /// <summary>Builds the plugin and returns its output folder.</summary>
     private static string Build(PluginProject plugin)
     {
-        // x64 so the build lands in bin/x64/Debug, where the copy reads it; a bare project
-        // build is AnyCPU and goes to bin/Debug
-        Shell.Run("dotnet", "build", Path.Combine(plugin.Top, plugin.Csproj), "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q");
-        return Path.Combine(plugin.Top, plugin.Dir, "bin", "x64", "Debug");
+        var (args, output) = BuildCommand(plugin);
+        Shell.Run("dotnet", args);
+        return output;
     }
 
-    private static string ClaimDetails(Git git, string task)
+    /// <summary>The dotnet arguments that build the plugin, and the folder the build lands in.</summary>
+    public static (string[] Args, string Output) BuildCommand(PluginProject plugin) =>
+        // x64 so the build lands in bin/x64/Debug, where the copy reads it; a bare project
+        // build is AnyCPU and goes to bin/Debug
+        (["build", Path.Combine(plugin.Top, plugin.Csproj), "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q"],
+         Path.Combine(plugin.Top, plugin.Dir, "bin", "x64", "Debug"));
+
+    public static string ClaimDetails(Git git, string task, DateTimeOffset now)
     {
         var commit = git.Output("rev-parse", "--short", "HEAD");
         if (git.IsDirty())
@@ -77,7 +94,7 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
             commit += " (uncommitted changes)";
         }
         var branch = git.Output("branch", "--show-current");
-        return $"branch={branch}\ncommit={commit}\ntask={task}\ndeployed={DateTimeOffset.Now:yyyy-MM-ddTHH:mm:sszzz}\n";
+        return $"branch={branch}\ncommit={commit}\ntask={task}\ndeployed={now:yyyy-MM-ddTHH:mm:sszzz}\n";
     }
 
     /// <summary>Claims the dev folder and copies the build in; refuses if another checkout holds it.</summary>
