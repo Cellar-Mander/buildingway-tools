@@ -16,7 +16,8 @@ Never touches the working tree. Exits 0, except with --ci, where an unguarded un
 exits 1 and is annotated for GitHub Actions (leave the job out of required checks so it
 informs without blocking).
 
-Per-project settings in .claude/checks (key=value), read at HEAD:
+Per-project settings in .claude/checks (key=value), read at HEAD, or from the working tree when
+HEAD has none (a git-excluded local file):
   revert_test=CMD    test command (falls back to mutation_test=, then stop=, then one found
                      from the project's layout: make, npm, cargo, go, dotnet, pytest,
                      unittest). Per-test results come from unittest -v, go test -v or cargo
@@ -63,6 +64,9 @@ ATTR_TEST = re.compile(r"^(\s*)(?:\[(?:Fact|Theory|Test|TestCase|TestMethod)\b|#
 ATTR_NAME = re.compile(r"\bfn\s+(\w+)|\b(\w+)\s*\(")
 BOUNDARY = re.compile(r"^(\s*)(?:def |async def |class |func |fn |pub |\[|#\[|public |private |protected |internal "
                       r"|static |it\(|test\(|describe\()")
+# A line that only closes brackets: one indented less than a test closes the class, module or
+# describe block around it, so it ends that test.
+CLOSER = re.compile(r"^(\s*)[}\])][}\]);,\s]*$")
 COMMENT = re.compile(r"^\s*(#|//|@|\[)")
 LINE_COMMENT = re.compile(r"^\s*(?:#(?!\[)|//)")  # a whole-line comment, not a #[...] attribute
 
@@ -86,7 +90,11 @@ def config(root, head):
     try:
         text = git("show", f"{head}:.claude/checks", cwd=root)
     except RuntimeError:
-        return {}
+        try:
+            with open(os.path.join(root, ".claude", "checks"), encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            return {}
     cfg = {}
     for line in text.splitlines():
         k, sep, v = line.partition("=")
@@ -169,7 +177,8 @@ def test_defs(path, text):
         end = min(end, py_ends.get(i + 1, end))
         for j in range(body, end):
             b = BOUNDARY.match(lines[j])
-            if b and len(b.group(1)) <= indent:
+            c = CLOSER.match(lines[j])
+            if (b and len(b.group(1)) <= indent) or (c and len(c.group(1)) < indent):
                 end = j
                 break
         while end > body and not lines[end - 1].strip():  # blank lines after a test aren't part of it
