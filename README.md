@@ -127,6 +127,10 @@ reports `.claude/checks` as differing, so change those two lines or delete the f
   on Windows the tool joins a Job Object with a job memory limit before starting Stryker.
   Without a systemd user session it warns and caps the concurrency only.
 - **CI** (`CI=true`): concurrency only; the runner is disposable.
+- **One run at a time**: a second `buildingway stryker` run (per user, any repo) waits, naming the
+  one that holds the lock, then sizes itself to the memory left. Two runs sized to half the free
+  memory each could use it all, and on jaunt a run that overlapped another reported 644
+  survivors where a run alone reported 6. Bare `dotnet stryker` runs don't take the lock.
 
 It prints one line with the concurrency and ceiling it chose.
 

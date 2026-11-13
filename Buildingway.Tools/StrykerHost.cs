@@ -12,6 +12,14 @@ internal static class StrykerHost
     public static int Run(string[] args)
     {
         var runner = Stryker.RunnerBytes(Environment.GetEnvironmentVariable(Stryker.RunnerVariable));
+        // Before reading the available memory, so a run that waited sizes itself to what the other left
+        var lockPath = StrykerLock.DefaultPath(OperatingSystem.IsLinux() ? Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR") : null, Path.GetTempPath());
+        using var held = StrykerLock.Acquire(
+            lockPath,
+            $"pid {Environment.ProcessId} in {Environment.CurrentDirectory}, since {DateTimeOffset.Now:HH:mm:ss}",
+            Console.Error.WriteLine,
+            TimeSpan.FromSeconds(2),
+            CancellationToken.None);
         var cores = Environment.ProcessorCount;
         var available = AvailableMemory();
         if (available is null)
