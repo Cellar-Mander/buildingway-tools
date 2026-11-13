@@ -2,9 +2,8 @@ namespace Buildingway.Tools;
 
 /// <summary>
 /// One `buildingway stryker` run per user at a time. Two runs at once each size themselves to
-/// half the free memory, so together they can still use it all; and on jaunt (2026-11-13) a run
-/// that overlapped another reported 644 survivors where a run alone reported 6, with mutants
-/// that always time out marked survived. The lock is the file opened without sharing (flock on
+/// half the free memory, so together they could still use it all; a run that waited sizes itself
+/// to what the other left. The lock is the file opened without sharing (flock on
 /// Unix, a sharing mode on Windows), so it is released when the process ends, however it ends.
 /// </summary>
 internal sealed class StrykerLock : IDisposable
