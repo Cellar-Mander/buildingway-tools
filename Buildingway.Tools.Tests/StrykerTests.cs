@@ -155,11 +155,40 @@ public sealed class StrykerTests
     public void SystemdRunPutsStrykerInACappedScopeWithoutSwap()
     {
         Assert.Equal(
-            ["--user", "--scope", "--quiet", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue", "--", "dotnet", "stryker", "--concurrency", "3"],
-            Stryker.SystemdRunArgs(2 * GiB, oomPolicy: true, ["--concurrency", "3"]));
+            ["--user", "--scope", "--quiet", "--unit", "buildingway-stryker-42", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue", "--", "dotnet", "stryker", "--concurrency", "3"],
+            Stryker.SystemdRunArgs(2 * GiB, oomPolicy: true, Stryker.ScopeUnit(42), ["--concurrency", "3"]));
         Assert.Equal(
             ["--user", "--scope", "--quiet", "-p", "MemoryMax=2147483648", "-p", "MemorySwapMax=0", "--", "dotnet", "stryker"],
-            Stryker.SystemdRunArgs(2 * GiB, oomPolicy: false, []));
+            Stryker.SystemdRunArgs(2 * GiB, oomPolicy: false, null, []));
+    }
+
+    [Fact]
+    public void TheScopeCgroupIsFoundOnceTheProcessIsInIt()
+    {
+        const string unit = "buildingway-stryker-42";
+
+        Assert.Equal(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/buildingway-stryker-42.scope",
+            Stryker.ScopeCgroup("0::/user.slice/user-1000.slice/user@1000.service/app.slice/buildingway-stryker-42.scope\n", unit));
+        // Still in the caller's cgroup, just after starting: never touch those processes
+        Assert.Null(Stryker.ScopeCgroup("0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-claude.scope\n", unit));
+        // Another run's scope whose pid starts the same
+        Assert.Null(Stryker.ScopeCgroup("0::/user.slice/app.slice/buildingway-stryker-421.scope\n", unit));
+        Assert.Null(Stryker.ScopeCgroup("0::/user.slice/app.slice/xbuildingway-stryker-42.scope\n", unit));
+        // cgroup v1 lines only
+        Assert.Null(Stryker.ScopeCgroup("12:memory:/user.slice/app.slice/buildingway-stryker-42.scope\n", unit));
+        Assert.Equal("/a/buildingway-stryker-42.scope", Stryker.ScopeCgroup("12:memory:/x\n0::/a/buildingway-stryker-42.scope", unit));
+    }
+
+    [Fact]
+    public void TestProcessesAreTheOomKillersPickNotStryker()
+    {
+        // The processes in a jaunt run's scope, 2026-11-13
+        Assert.False(Stryker.IsExpendable(205862, root: 205862, "/usr/bin/dotnet stryker --concurrency 1 "));
+        Assert.False(Stryker.IsExpendable(205875, root: 205862, "/usr/lib/dotnet/dotnet /home/u/.nuget/packages/dotnet-stryker/5.0.0/tools/net10.0/any/Stryker.CLI.dll --concurrency 1 "));
+        Assert.True(Stryker.IsExpendable(206044, root: 205862, "/usr/bin/dotnet /tmp/j/.vstest/tools/net8.0/vstest.console.dll /parentprocessid:205875 /port:33349 "));
+        Assert.True(Stryker.IsExpendable(207785, root: 205862, "/usr/lib/dotnet/dotnet exec --runtimeconfig /repo/Jaunt.Core.Tests/bin/Debug/net10.0/Jaunt.Core.Tests.runtimeconfig.json "));
+        Assert.Equal("1000", Stryker.ExpendableOomScore);
     }
 
     [Fact]

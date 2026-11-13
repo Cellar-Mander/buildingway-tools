@@ -28,6 +28,9 @@ internal static class Shell
         return process.ExitCode;
     }
 
+    /// <summary>Starts a command with the console's output, for a caller that watches it while it runs.</summary>
+    public static Process StartChild(string file, params string[] args) => Start(file, args, capture: false);
+
     /// <summary>Runs a command and returns its trimmed output, failing when it exits non-zero.</summary>
     public static string Output(string file, params string[] args)
     {

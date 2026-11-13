@@ -39,7 +39,8 @@ internal static class StrykerHost
             if (SystemdScope(plan.Ceiling) is { } systemdArgs)
             {
                 ceilingBy = "systemd scope";
-                run = () => Shell.RunCode("systemd-run", systemdArgs(plan.Args));
+                var unit = Stryker.ScopeUnit(Environment.ProcessId);
+                run = () => RunInScope(systemdArgs(unit, plan.Args), unit);
             }
             else
             {
@@ -71,6 +72,60 @@ internal static class StrykerHost
         return run?.Invoke() ?? Shell.RunCode("dotnet", ["stryker", .. plan.Args]);
     }
 
+    /// <summary>
+    /// Runs systemd-run and, until it exits, marks the test processes in its scope as the OOM
+    /// killer's first pick. Raising a process's oom_score_adj needs no privilege. Test hosts start
+    /// once per runner (and again after a kill), so polling marks each long before a mutant runs.
+    /// </summary>
+    private static int RunInScope(string[] systemdArgs, string unit)
+    {
+        using var process = Shell.StartChild("systemd-run", systemdArgs);
+        var marked = new HashSet<int>();
+        while (!process.WaitForExit(200))
+        {
+            MarkExpendable(process.Id, unit, marked);
+        }
+        process.WaitForExit();
+        return process.ExitCode;
+    }
+
+    private static void MarkExpendable(int root, string unit, HashSet<int> marked)
+    {
+        try
+        {
+            // systemd-run execs dotnet stryker in its own process, so root's cgroup is the scope
+            if (Stryker.ScopeCgroup(File.ReadAllText($"/proc/{root}/cgroup"), unit) is not { } cgroup)
+            {
+                return;
+            }
+            foreach (var line in File.ReadAllLines($"/sys/fs/cgroup{cgroup}/cgroup.procs"))
+            {
+                if (!int.TryParse(line, out var pid) || marked.Contains(pid))
+                {
+                    continue;
+                }
+                try
+                {
+                    var cmdline = File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ');
+                    // Not remembered when kept: between fork and exec a child still shows its parent's command line
+                    if (Stryker.IsExpendable(pid, root, cmdline))
+                    {
+                        File.WriteAllText($"/proc/{pid}/oom_score_adj", Stryker.ExpendableOomScore);
+                        marked.Add(pid);
+                    }
+                }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                {
+                    // Gone already
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // The scope is gone or not there yet
+        }
+    }
+
     private static long? AvailableMemory()
     {
         if (OperatingSystem.IsLinux())
@@ -97,18 +152,18 @@ internal static class StrykerHost
     /// returns how to build the real command; null when there's no systemd user session. Tries
     /// OOMPolicy=continue first, which systemd 253 and later need and earlier ones reject.
     /// </summary>
-    private static Func<string[], string[]>? SystemdScope(long ceiling)
+    private static Func<string, string[], string[]>? SystemdScope(long ceiling)
     {
         foreach (var oomPolicy in new[] { true, false })
         {
-            var probe = Stryker.SystemdRunArgs(ceiling, oomPolicy, []);
+            var probe = Stryker.SystemdRunArgs(ceiling, oomPolicy, null, []);
             // ... -- dotnet stryker  →  ... -- true
             string[] check = [.. probe[..^2], "true"];
             try
             {
                 if (Shell.TryOutput("systemd-run", check).Code == 0)
                 {
-                    return strykerArgs => Stryker.SystemdRunArgs(ceiling, oomPolicy, strykerArgs);
+                    return (unit, strykerArgs) => Stryker.SystemdRunArgs(ceiling, oomPolicy, unit, strykerArgs);
                 }
             }
             catch (ToolException)

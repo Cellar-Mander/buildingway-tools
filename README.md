@@ -125,7 +125,11 @@ reports `.claude/checks` as differing, so change those two lines or delete the f
   available physical memory on Windows), covering Stryker and every test host it starts. On
   Linux the run is in a `systemd-run --user --scope` with `MemoryMax` and `MemorySwapMax=0`;
   on Windows the tool joins a Job Object with a job memory limit before starting Stryker.
-  Without a systemd user session it warns and caps the concurrency only.
+  Without a systemd user session it warns and caps the concurrency only. While the run goes,
+  the tool sets `oom_score_adj` to 1000 on every process in the scope except Stryker itself
+  (vstest.console, test hosts, builds), so the kernel's OOM killer always picks a test process.
+  Left to pick by size, it once killed Stryker after two runaway test hosts overflowed the
+  ceiling together, ending the run with no report.
 - **CI** (`CI=true`): concurrency only; the runner is disposable.
 - **One run at a time**: a second `buildingway stryker` run (per user, any repo) waits, naming the
   one that holds the lock, then sizes itself to the memory left, since two runs sized to half the

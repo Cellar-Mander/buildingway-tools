@@ -89,14 +89,42 @@ internal static class Stryker
     /// thrashing. <paramref name="oomPolicy"/> keeps the scope running when that happens; systemd
     /// 253 and later otherwise stop the whole scope, and earlier ones don't accept it on a scope.
     /// </summary>
-    public static string[] SystemdRunArgs(long ceiling, bool oomPolicy, string[] strykerArgs) =>
+    /// <param name="unit">The scope's name, so the run's processes can be found in its cgroup; systemd picks one when null.</param>
+    public static string[] SystemdRunArgs(long ceiling, bool oomPolicy, string? unit, string[] strykerArgs) =>
     [
         "--user", "--scope", "--quiet",
+        .. unit is null ? [] : (string[])["--unit", unit],
         "-p", $"MemoryMax={ceiling.ToString(CultureInfo.InvariantCulture)}",
         "-p", "MemorySwapMax=0",
         .. oomPolicy ? (string[])["-p", "OOMPolicy=continue"] : [],
         "--", "dotnet", "stryker", .. strykerArgs,
     ];
+
+    /// <summary>The scope a run started by process <paramref name="pid"/> runs in.</summary>
+    public static string ScopeUnit(int pid) => $"buildingway-stryker-{pid.ToString(CultureInfo.InvariantCulture)}";
+
+    /// <summary>
+    /// The cgroup directory under /sys/fs/cgroup from a /proc/PID/cgroup file, when the process is
+    /// in <paramref name="unit"/>'s scope yet (systemd moves it there just after it starts); else null.
+    /// </summary>
+    public static string? ScopeCgroup(string procCgroup, string unit)
+    {
+        // cgroup v2: "0::/user.slice/.../app.slice/buildingway-stryker-123.scope"
+        var line = procCgroup.Split('\n').FirstOrDefault(l => l.StartsWith("0::/", StringComparison.Ordinal));
+        return line is not null && line.EndsWith($"/{unit}.scope", StringComparison.Ordinal) ? line[3..] : null;
+    }
+
+    /// <summary>
+    /// The OOM killer's first pick in the scope: every process but the dotnet stryker launcher
+    /// (<paramref name="root"/>) and the Stryker host it starts. Left alone, the killer picks the
+    /// biggest process, and when two runaway test hosts overflow the ceiling at once that can be
+    /// Stryker itself, ending the run without a report (seen on jaunt, 2026-11-13).
+    /// </summary>
+    public static bool IsExpendable(int pid, int root, string cmdline) =>
+        pid != root && !cmdline.Contains("Stryker.CLI", StringComparison.Ordinal);
+
+    /// <summary>The oom_score_adj given to expendable processes: always killed before one at 0.</summary>
+    public const string ExpendableOomScore = "1000";
 
     /// <summary>The one line saying what the run gets.</summary>
     /// <param name="ceilingBy">What enforces the ceiling, or null when nothing does.</param>
