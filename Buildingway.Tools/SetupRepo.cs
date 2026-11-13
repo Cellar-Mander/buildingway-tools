@@ -259,8 +259,9 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
             # Core.Tests only, like CI: the plugin project needs a Dalamud install to build.
             revert_test=dotnet build {{name}}.Core.Tests --nologo -v q && dotnet test {{name}}.Core.Tests --nologo --no-build --logger "trx;LogFileName={trx}"
             # dotnet buildingway mutant-triage: full run, one file's mutants, and the spec triage checks behaviour against.
-            mutation_run=cd {{name}}.Core.Tests && dotnet stryker
-            mutation_rerun=cd {{name}}.Core.Tests && dotnet stryker --mutate "**/{name}"
+            # buildingway stryker caps the runners and memory to fit the machine, so a runaway mutant can't freeze it.
+            mutation_run=cd {{name}}.Core.Tests && dotnet buildingway stryker
+            mutation_rerun=cd {{name}}.Core.Tests && dotnet buildingway stryker --mutate "**/{name}"
             spec=docs/design.md
 
             """),

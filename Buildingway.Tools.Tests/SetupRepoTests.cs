@@ -303,6 +303,10 @@ public sealed class SetupRepoTests : IDisposable
         var checks = File.ReadAllText(Path.Combine(Checkout, ".claude", "checks"));
         Assert.Contains("stop=dotnet build SayMyName.slnx", checks);
         Assert.Contains("--mutate \"**/{name}\"", checks);
+        // Stryker runs capped to the machine, never bare
+        Assert.Contains("mutation_run=cd SayMyName.Core.Tests && dotnet buildingway stryker\n", checks);
+        Assert.Contains("mutation_rerun=cd SayMyName.Core.Tests && dotnet buildingway stryker --mutate \"**/{name}\"\n", checks);
+        Assert.DoesNotContain("&& dotnet stryker", checks);
         Assert.Equal(["# git's default comment", ".claude/worktrees/", "", "# Local dev-process files, kept off the remote (buildingway setup-repo)", ".claude/", ".worktreeinclude"],
             File.ReadAllLines(Exclude));
     }

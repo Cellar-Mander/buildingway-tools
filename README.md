@@ -14,6 +14,7 @@ name, so nothing in the tool is specific to one plugin.
 | `release verify <version>[-rc<n>]` | Checks the tag, GitHub release, zip manifest and live `repo.json` |
 | `revert-check` | Do the branch's new or changed tests fail with its product changes reverted? (needs `python3`) |
 | `mutant-triage` | Works through a Stryker run's surviving mutants (needs `python3`) |
+| `stryker [args]` | Runs `dotnet stryker` with its concurrency and memory capped to fit the machine |
 | `setup-repo [--check]` | Sets the repo's ruleset, merge settings, Actions permissions and labels, and writes local dev files (needs `gh`) |
 
 ## Using it in a plugin repo
@@ -107,6 +108,45 @@ yet).
   that differ are overwritten.
 - Local, kept off the remote through `.git/info/exclude`: `.claude/checks` and `.worktreeinclude`,
   created when missing and only reported when they differ.
+
+### Stryker limits
+
+`stryker` runs `dotnet stryker [args]` (the repo's own Stryker tool) so that a mutant that
+allocates in a loop, such as one that removes the loop's increment, can't take the machine down.
+`setup-repo`'s `mutation_run` and `mutation_rerun` use it; in a repo set up before, `setup-repo`
+reports `.claude/checks` as differing, so change those two lines or delete the file and re-run.
+
+- **Concurrency**: unless the args give `--concurrency`/`-c`, it passes
+  `--concurrency N`, N = max(1, min(logical cores / 2, ceiling / 768 MiB)). This overrides a
+  `concurrency` in `stryker-config.json`; pass `-c` to choose. Set
+  `BUILDINGWAY_STRYKER_RUNNER_MB` to change the 768 MiB per runner (measured on
+  Jaunt.Core.Tests: about 320 MiB per extra runner, vstest.console plus test host).
+- **Memory ceiling**: half the memory available at the start (`MemAvailable` on Linux,
+  available physical memory on Windows), covering Stryker and every test host it starts. On
+  Linux the run is in a `systemd-run --user --scope` with `MemoryMax` and `MemorySwapMax=0`;
+  on Windows the tool joins a Job Object with a job memory limit before starting Stryker.
+  Without a systemd user session it warns and caps the concurrency only. While the run goes,
+  the tool sets `oom_score_adj` to 1000 on every process in the scope except Stryker itself
+  (vstest.console, test hosts, builds), so the kernel's OOM killer always picks a test process.
+  Left to pick by size, it once killed Stryker after two runaway test hosts overflowed the
+  ceiling together, ending the run with no report.
+- **CI** (`CI=true`): concurrency only; the runner is disposable.
+- **One run at a time**: a second `buildingway stryker` run (per user, any repo) waits, naming the
+  one that holds the lock, then sizes itself to the memory left, since two runs sized to half the
+  free memory each could use it all. Bare `dotnet stryker` runs don't take the lock.
+
+It prints one line with the concurrency and ceiling it chose.
+
+**How capped mutants are recorded** (Stryker.NET 5.0.0, tested 2026-11-13 with a mutant that
+allocates 1 MiB per loop pass forever): never as survived, so triage isn't misled.
+
+- Usually **Killed**: .NET sizes its GC heap limit to 75% of the cgroup's or job's memory
+  limit, so the runaway test host throws `OutOfMemoryException` and the test fails.
+- **Timeout** when the kernel's OOM killer ends the test host first (several runners share the
+  ceiling, so the runaway one reaches it before its own heap limit). Stryker carries on with the
+  other mutants. A timeout on a mutant in a loop may be this; it's caught either way. On jaunt's
+  tokeniser (2 runners, 2500 MiB ceiling) the OOM killer fired 4 times and the 18 loop-progress
+  mutants (`i++` removed, `i--`, negated conditions) all came out Timeout; the run finished.
 
 ### Python tools
 
