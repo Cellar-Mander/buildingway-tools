@@ -137,7 +137,9 @@ allocates 1 MiB per loop pass forever): never as survived, so triage isn't misle
   limit, so the runaway test host throws `OutOfMemoryException` and the test fails.
 - **Timeout** when the kernel's OOM killer ends the test host first (several runners share the
   ceiling, so the runaway one reaches it before its own heap limit). Stryker carries on with the
-  other mutants. A timeout on a mutant in a loop may be this; it's caught either way.
+  other mutants. A timeout on a mutant in a loop may be this; it's caught either way. On jaunt's
+  tokeniser (2 runners, 2500 MiB ceiling) the OOM killer fired 4 times and the 18 loop-progress
+  mutants (`i++` removed, `i--`, negated conditions) all came out Timeout; the run finished.
 
 ### Python tools
 
