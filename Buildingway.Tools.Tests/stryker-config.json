@@ -12,7 +12,8 @@
       "!**/Shell.cs",
       "!**/Python.cs",
       "!**/GitHub.cs",
-      "!**/Program.cs"
+      "!**/Program.cs",
+      "!**/StrykerHost.cs"
     ]
   }
 }

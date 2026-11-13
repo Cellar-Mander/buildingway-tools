@@ -13,6 +13,7 @@ internal static class Program
           revert-check   do the branch's new or changed tests fail with its product changes reverted?
           mutant-triage  work through a mutation run's surviving mutants
           setup-repo     set the repo's GitHub ruleset, merge settings and labels, and write local dev files
+          stryker        run dotnet stryker with its concurrency and memory capped to fit the machine
 
         Run a command without arguments, or revert-check and mutant-triage with --help, for its usage.
         The plugin is the project in a top-level folder whose csproj uses Dalamud.NET.Sdk.
@@ -31,6 +32,7 @@ internal static class Program
                 ["revert-check", .. var rest] => Python.Run("revert-check", rest),
                 ["mutant-triage", .. var rest] => Python.Run("mutant-triage", rest),
                 ["setup-repo", .. var rest] => SetupRepo.Run(rest),
+                ["stryker", .. var rest] => StrykerHost.Run(rest),
                 ["--version"] => PrintVersion(),
                 _ => PrintUsage(),
             };
