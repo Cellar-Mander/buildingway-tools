@@ -2,6 +2,7 @@
   "stryker-config": {
     "project": "Buildingway.Tools.csproj",
     "reporters": [ "progress", "html", "markdown", "json" ],
+    "additional-timeout": 1000,
     "thresholds": {
       "high": 80,
       "low": 60,
