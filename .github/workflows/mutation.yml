@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   mutation:
-    uses: Cellar-Mander/buildingway-ci/.github/workflows/mutation.yml@2dc2514507e9a7a69c2cdd457483ce346095a244 # v0.7.0
+    uses: Cellar-Mander/buildingway-ci/.github/workflows/mutation.yml@98738d9d6f9294110f8ff7317f2300e3b1a52e72 # v0.9.0
     permissions:
       contents: read
       packages: read
