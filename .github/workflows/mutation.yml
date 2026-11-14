@@ -7,6 +7,12 @@ on:
   pull_request:
     types: [ opened, synchronize, reopened, labeled ]
 
+# A new push to a PR cancels its superseded run. A label other than "mutation" starts a run that does
+# nothing, so it gets a group of its own instead of cancelling a real one.
+concurrency:
+  group: mutation-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'mutation' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
