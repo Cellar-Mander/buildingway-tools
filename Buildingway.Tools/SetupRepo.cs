@@ -17,7 +17,7 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
     public const string RulesetName = "Protect Main";
 
     /// <summary>Check runs the main branch requires: shared buildingway-ci jobs as 'caller / job'.</summary>
-    public static readonly string[] RequiredChecks = ["test / test", "pr-build / build", "lint / actionlint", "lint / zizmor"];
+    public static readonly string[] RequiredChecks = ["test / test", "pr-build / build", "size / size", "lint / actionlint", "lint / zizmor"];
 
     private bool changed;
 

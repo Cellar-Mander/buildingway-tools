@@ -52,6 +52,10 @@
             "integration_id": 15368
           },
           {
+            "context": "size / size",
+            "integration_id": 15368
+          },
+          {
             "context": "lint / actionlint",
             "integration_id": 15368
           },
