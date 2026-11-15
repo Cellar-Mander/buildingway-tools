@@ -25,8 +25,18 @@ HEAD has none (a git-excluded local file):
                      {trx} (a dotnet TRX file) or {trxdir} (a directory of them). Otherwise
                      only the whole suite's exit code is compared.
   revert_tests=GLOBS space-separated globs for test files (default: common test layouts)
-Environment: REVERT_CHECK_TIMEOUT (seconds per run, default 900), REVERT_CHECK_LOG
-(default ~/.claude/hooks/revert-check.log when that directory exists; not used with --ci).
+  revert_docs=GLOBS  space-separated globs for docs, never reverted and not counted as product
+                     (default: Markdown, reStructuredText and AsciiDoc files; set it empty
+                     when the tests read the docs, so they count as product)
+Environment: REVERT_CHECK_TIMEOUT (seconds per run, default 900), REVERT_CHECK_MEMORY_MB (memory
+ceiling, default half of MemAvailable; 0 for none), REVERT_CHECK_LOG (default
+~/.claude/hooks/revert-check.log when that directory exists; not used with --ci).
+
+On Linux each test run gets a transient systemd user scope with that memory ceiling and no swap,
+stopped afterwards so no build server or test host outlives it; without a systemd user session it
+warns and runs uncapped. No ceiling with --ci or CI=true, or when this process's cgroup already
+has one (as inside pre-pr). Every run is its own process group, killed on exit or timeout, and
+dotnet build servers are turned off.
 """
 
 import argparse
@@ -38,6 +48,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -51,6 +62,8 @@ TEST_PATH = re.compile(
 )
 # Never reverted: changing them would change how the tests are run, not what they test.
 KEEP = (".claude/", ".github/")
+# Docs can't change what the tests do, so they are not product either (revert_docs= overrides).
+DOC_GLOBS = ("*.md", "*.markdown", "*.rst", "*.adoc")
 MAX_REBUILDS = 5  # rounds of setting aside test files that don't build with the product reverted
 MARKER = re.compile(r"revert-check:\s*not revert-sensitive", re.IGNORECASE)
 # A test that starts on one line: Python def test_*, Go func TestX, JS/TS it("...") / test("...").
@@ -107,6 +120,10 @@ def is_test_path(path, globs):
     if globs:
         return any(fnmatch.fnmatch(path, g) for g in globs)
     return bool(TEST_PATH.search(path))
+
+
+def is_doc_path(path, globs):
+    return any(fnmatch.fnmatchcase(path.lower(), g.lower()) for g in globs)
 
 
 def changed_tests(path, old, new):
@@ -265,17 +282,79 @@ class Run:
     timed_out: bool = False
 
 
-def run_tests(cmd, cwd, tmp, label, timeout):
+# Build servers (MSBuild nodes, VBCSCompiler, the MSBuild server) would outlive each run.
+BUILD_ENV = {"MSBUILDDISABLENODEREUSE": "1", "DOTNET_CLI_USE_MSBUILD_SERVER": "0", "UseSharedCompilation": "false"}
+
+
+def own_cgroup_capped():
+    """True when this process's cgroup already has a memory ceiling (pre-pr's capped scope, or a
+    revert-check run inside another's tests): a scope of our own would escape it, not nest in it."""
+    try:
+        with open("/proc/self/cgroup") as f:
+            path = next(ln.split(":", 2)[2].strip() for ln in f if ln.startswith("0::"))
+        with open(f"/sys/fs/cgroup{path}/memory.max") as f:
+            return f.read().strip() != "max"
+    except (OSError, StopIteration):
+        return False
+
+
+def memory_ceiling(ci):
+    """(systemd-run -p arguments for the memory ceiling, or None to run uncapped; a note to print or "")."""
+    if ci or os.environ.get("CI") == "true" or not sys.platform.startswith("linux"):
+        return None, ""
+    if own_cgroup_capped():
+        return None, ""
+    mb = os.environ.get("REVERT_CHECK_MEMORY_MB", "")
+    if mb == "0":
+        return None, ""
+    if mb:
+        ceiling = int(mb) * 1048576
+    else:
+        with open("/proc/meminfo") as f:
+            avail = next(int(ln.split()[1]) * 1024 for ln in f if ln.startswith("MemAvailable:"))
+        ceiling = avail // 2
+    props = ["-p", f"MemoryMax={ceiling}", "-p", "MemorySwapMax=0"]
+    if shutil.which("systemd-run"):
+        for extra in (["-p", "OOMPolicy=continue"], []):  # systemd before 253 rejects OOMPolicy on a scope
+            probe = ["systemd-run", "--user", "--scope", "--quiet", "--collect", *props, *extra, "true"]
+            if subprocess.run(probe, check=False, capture_output=True).returncode == 0:
+                return props + extra, ""
+    return None, "warning: no systemd user session to set a memory ceiling in; running the tests without one."
+
+
+def run_tests(cmd, cwd, tmp, label, timeout, ceiling=None):
+    """Run the test command in its own process group, under the memory ceiling in a user scope when
+    `ceiling` is given, and kill everything it started once it exits or times out."""
     report = {"junit": os.path.join(tmp, f"{label}.xml"), "trx": os.path.join(tmp, f"{label}.trx"),
               "trxdir": os.path.join(tmp, f"{label}-trx")}
     full = cmd
     for key, path in report.items():
         full = full.replace("{" + key + "}", shlex.quote(path))
-    try:
-        r = subprocess.run(["bash", "-c", full], check=False, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return Run(124, None, "", timed_out=True)
-    out = r.stdout + r.stderr
+    argv = ["bash", "-c", full]
+    unit = f"revert-check-{os.getpid()}-{label}"
+    if ceiling:
+        argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
+                "-p", "TimeoutStopSec=10s", *ceiling, "--", *argv]
+    # Output goes to files, not pipes: a leftover grandchild holding a pipe open would block reading it.
+    with open(os.path.join(tmp, f"{label}.out"), "w+") as out_f, open(os.path.join(tmp, f"{label}.err"), "w+") as err_f:
+        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f,
+                                env={**os.environ, **BUILD_ENV}, start_new_session=True)
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        finally:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            if ceiling:
+                subprocess.run(["systemctl", "--user", "stop", f"{unit}.scope"], check=False, capture_output=True)
+            proc.wait()
+        if timed_out:
+            return Run(124, None, "", timed_out=True)
+        out_f.seek(0)
+        err_f.seek(0)
+        out = out_f.read() + err_f.read()
     results = None
     try:
         if "{junit}" in cmd and os.path.exists(report["junit"]):
@@ -293,7 +372,7 @@ def run_tests(cmd, cwd, tmp, label, timeout):
             results = parse_output(out)
     except ET.ParseError:
         results = None
-    return Run(r.returncode, results, out)
+    return Run(proc.returncode, results, out)
 
 
 def detect_command(root, head):
@@ -509,7 +588,9 @@ def main(argv=None):
     globs = cfg.get("revert_tests", "").split()
     changes = [ln.split("\t", 1) for ln in git("diff", "--name-status", "--no-renames", mb, head, cwd=root).splitlines()]
     tests = [(s, f) for s, f in changes if is_test_path(f, globs)]
-    product = [(s, f) for s, f in changes if not is_test_path(f, globs) and not f.startswith(KEEP)]
+    docs = cfg["revert_docs"].split() if "revert_docs" in cfg else DOC_GLOBS
+    product = [(s, f) for s, f in changes
+               if not is_test_path(f, globs) and not f.startswith(KEEP) and not is_doc_path(f, docs)]
     if not tests:
         say(f"no test files changed since {base}. Nothing to prove.")
         return 0
@@ -528,14 +609,22 @@ def main(argv=None):
         return 0
 
     timeout = int(os.environ.get("REVERT_CHECK_TIMEOUT", "900"))
+    ceiling, note = memory_ceiling(a.ci)
+    if note:
+        print(f"revert-check: {note}", file=sys.stderr)
+    # A TERM (the hook's timeout, pre-pr's trap) unwinds like Ctrl-C, so the scope, the test
+    # processes and the worktree are cleaned up instead of left behind.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     start = time.time()
     tmp = tempfile.mkdtemp(prefix="revert-check-")
     wt = os.path.join(tmp, "tree")
     try:
         git("worktree", "add", "-q", "--detach", wt, head, cwd=root)
-        at_head = run_tests(cmd, wt, tmp, "head", timeout)
+        at_head = run_tests(cmd, wt, tmp, "head", timeout, ceiling)
         if at_head.rc != 0:
             why = "timed out" if at_head.timed_out else f"exit {at_head.rc}"
+            if ceiling and at_head.rc in (-9, 137):
+                why += ", killed: likely over the memory ceiling; REVERT_CHECK_MEMORY_MB sets it"
             print(f"revert-check: the tests fail at HEAD ({why}, command: {cmd}), so whether the new tests guard "
                   f"the change can't be checked. Last lines:")
             print("\n".join(at_head.output.splitlines()[-15:]))
@@ -546,7 +635,7 @@ def main(argv=None):
         for s, f in product:
             if s == "A":
                 os.remove(os.path.join(wt, f))
-        reverted = run_tests(cmd, wt, tmp, "reverted", timeout)
+        reverted = run_tests(cmd, wt, tmp, "reverted", timeout, ceiling)
         # A compiler may stop at the first errors it finds (Roslyn reports declaration errors and
         # skips method bodies), hiding other test files that need the new code. While nothing ran
         # and every error is in a test file, set those files aside and build again; the tests
@@ -566,7 +655,7 @@ def main(argv=None):
             for f in files:
                 with contextlib.suppress(FileNotFoundError):
                     os.remove(os.path.join(wt, f))
-            reverted = run_tests(cmd, wt, tmp, f"reverted{n}", timeout)
+            reverted = run_tests(cmd, wt, tmp, f"reverted{n}", timeout, ceiling)
     finally:
         git("worktree", "remove", "--force", wt, cwd=root, check=False)
         shutil.rmtree(tmp, ignore_errors=True)
