@@ -586,7 +586,7 @@ def cmd_rerun(a, root, cfg):
         mine = [m for m in mine if m.line == int(line)]
     print(f"{path}: {name}" + (f" line {line}" if line else ""))
     for m in mine:
-        if m.status not in ("CompileError",):
+        if m.status != "CompileError":
             print(f"  {m.key}  {m.where}  {m.status}  {describe(m)}" + (f"  ({m.reason})" if m.reason else ""))
     return 0
 
