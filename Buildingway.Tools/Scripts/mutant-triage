@@ -524,7 +524,16 @@ def short_test(name):
     return ".".join(name.split("(")[0].split(".")[-2:])
 
 
+def unguarded(cmd):
+    """A Stryker command not launched by stryker-guard, which could freeze the machine."""
+    return (os.environ.get("CI", "").lower() != "true" and "stryker-guard" not in cmd
+            and re.search(r"\bstryker\b", cmd) is not None)
+
+
 def run(cmd, root):
+    if unguarded(cmd):
+        sys.exit(f"mutant-triage: {cmd!r} runs Stryker without stryker-guard; put `stryker-guard` before the "
+                 "Stryker command in .claude/checks, e.g. `cd Tests && stryker-guard dotnet stryker --mutate ...`")
     print(f"mutant-triage: running {cmd}", file=sys.stderr)
     return subprocess.run(["bash", "-c", cmd], cwd=root, check=False).returncode
 
