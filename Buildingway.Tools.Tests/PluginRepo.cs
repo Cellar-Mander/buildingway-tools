@@ -5,6 +5,14 @@ internal sealed class PluginRepo : IDisposable
 {
     public PluginRepo(string name, string repoUrl = "https://github.com/Owner/my-plugin")
     {
+        // These point git at another repo whatever -C says, e.g. when the tests run in a git hook
+        foreach (var variable in new[] { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR" })
+        {
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable(variable)))
+            {
+                throw new InvalidOperationException($"Unset {variable}: tests that make git repos would act on the repo it names.");
+            }
+        }
         Top = Directory.CreateTempSubdirectory("buildingway-repo").FullName;
         Directory.CreateDirectory(Path.Combine(Top, name));
         File.WriteAllText(Path.Combine(Top, name, name + ".csproj"), $"""

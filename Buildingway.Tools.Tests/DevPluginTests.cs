@@ -252,7 +252,7 @@ public sealed class DevPluginTests : IDisposable
         var (args, output) = DevPlugin.BuildCommand(repo.Plugin);
 
         Assert.Equal(
-            ["build", Path.Combine(repo.Top, "MyPlugin/MyPlugin.csproj"), "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q"],
+            ["build", Path.Combine(repo.Top, "MyPlugin", "MyPlugin.csproj"), "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q"],
             args);
         Assert.Equal(Path.Combine(repo.Top, "MyPlugin", "bin", "x64", "Debug"), output);
     }

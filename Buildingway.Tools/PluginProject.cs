@@ -48,6 +48,9 @@ internal sealed partial class PluginProject
     /// <summary>The csproj, relative to the checkout, with forward slashes.</summary>
     public string Csproj => $"{Dir}/{Name}.csproj";
 
+    /// <summary>The csproj's full path, with the platform's separators.</summary>
+    public string CsprojPath => Path.Combine(Top, Dir, Name + ".csproj");
+
     public string? RepoUrl { get; }
 
     /// <summary>Folders of code that ships in the plugin, relative and with trailing slashes.</summary>

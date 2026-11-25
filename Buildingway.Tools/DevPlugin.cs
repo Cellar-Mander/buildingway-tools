@@ -83,7 +83,7 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
     public static (string[] Args, string Output) BuildCommand(PluginProject plugin) =>
         // x64 so the build lands in bin/x64/Debug, where the copy reads it; a bare project
         // build is AnyCPU and goes to bin/Debug
-        (["build", Path.Combine(plugin.Top, plugin.Csproj), "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q"],
+        (["build", plugin.CsprojPath, "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q"],
          Path.Combine(plugin.Top, plugin.Dir, "bin", "x64", "Debug"));
 
     public static string ClaimDetails(Git git, string task, DateTimeOffset now)
