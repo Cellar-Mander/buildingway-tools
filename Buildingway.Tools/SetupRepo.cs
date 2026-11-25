@@ -275,13 +275,16 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
     /// <summary>What .git/info/exclude must list so the local files stay off the remote.</summary>
     public static readonly string[] ExcludedPaths = [".claude/", ".worktreeinclude"];
 
+    /// <summary>Where a <see cref="LocalFiles"/> path lives in the checkout <paramref name="top"/>.</summary>
+    public static string LocalPath(string top, string path) => Path.Combine(top, path);
+
     /// <param name="top">The checkout to write the local files in.</param>
     /// <param name="excludeFile">The repo's info/exclude, shared by its worktrees.</param>
     public void ApplyLocal(string top, string excludeFile)
     {
         foreach (var (path, content) in LocalFiles(name))
         {
-            var full = Path.Combine(top, path);
+            var full = LocalPath(top, path);
             if (!File.Exists(full))
             {
                 Report(path, "create");
