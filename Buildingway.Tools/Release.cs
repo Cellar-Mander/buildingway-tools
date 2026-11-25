@@ -92,8 +92,6 @@ internal sealed partial class Release(Git git, PluginProject plugin, ReleaseHost
         return (null, subject);
     }
 
-    private string CsprojPath => Path.Combine(git.Top, plugin.Csproj);
-
     private string ChangelogPath => Path.Combine(git.Top, "CHANGELOG.md");
 
     private string MainVersion() =>
@@ -145,8 +143,8 @@ internal sealed partial class Release(Git git, PluginProject plugin, ReleaseHost
         }
 
         git.Run("switch", "-q", "-c", branch, "origin/main");
-        var csproj = File.ReadAllText(CsprojPath);
-        File.WriteAllText(CsprojPath, csproj.Replace($"<Version>{current}</Version>", $"<Version>{version}</Version>"));
+        var csproj = File.ReadAllText(plugin.CsprojPath);
+        File.WriteAllText(plugin.CsprojPath, csproj.Replace($"<Version>{current}</Version>", $"<Version>{version}</Version>"));
         var changelog = File.ReadAllText(ChangelogPath);
         File.WriteAllText(ChangelogPath, reversion
             ? Changelog.Reversion(changelog, current, heading)
@@ -196,7 +194,7 @@ internal sealed partial class Release(Git git, PluginProject plugin, ReleaseHost
     private string Solution()
     {
         var solutions = Directory.EnumerateFiles(git.Top, "*.slnx").Concat(Directory.EnumerateFiles(git.Top, "*.sln")).ToList();
-        return solutions.Count == 1 ? solutions[0] : CsprojPath;
+        return solutions.Count == 1 ? solutions[0] : plugin.CsprojPath;
     }
 
     /// <summary>
@@ -205,7 +203,7 @@ internal sealed partial class Release(Git git, PluginProject plugin, ReleaseHost
     /// </summary>
     private string? DalamudNote()
     {
-        var pinFile = Path.Combine(git.Top, PinFile);
+        var pinFile = Path.Combine(git.Top, ".github", "dalamud.env");
         if (!File.Exists(pinFile))
         {
             return null;
