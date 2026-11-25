@@ -228,4 +228,20 @@ public class ReleaseTests
 
         Assert.Equal("- Add the plugin", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
     }
+
+    [Fact]
+    public void ChangesSinceDiffsAMergeAgainstMain()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0");
+        repo.Git.Output("switch", "-q", "-c", "feature");
+        File.WriteAllText(Path.Combine(repo.Top, "MyPlugin", "Plugin.cs"), "class Plugin;\n");
+        repo.Commit("Add the plugin");
+        repo.Git.Output("switch", "-q", "main");
+        repo.Git.Output("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false",
+            "merge", "-q", "--no-ff", "-m", "Merge pull request #5 from owner/feature", "-m", "Add the plugin window", "feature");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("- #5 Add the plugin window ⚠ plugin code changed, no CHANGELOG entry", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
+    }
 }
