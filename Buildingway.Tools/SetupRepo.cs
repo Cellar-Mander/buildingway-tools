@@ -63,7 +63,8 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
         }
         var setup = new SetupRepo(github, repo, name, output, check);
         setup.ApplyGitHub();
-        setup.ApplyLocal(git.Top, git.Output("rev-parse", "--path-format=absolute", "--git-path", "info/exclude"));
+        // git prints the path with forward slashes on Windows
+        setup.ApplyLocal(git.Top, Path.GetFullPath(git.Output("rev-parse", "--path-format=absolute", "--git-path", "info/exclude")));
         return setup.Finish();
     }
 
@@ -275,13 +276,19 @@ internal sealed class SetupRepo(IGitHub github, string repo, string name, TextWr
     /// <summary>What .git/info/exclude must list so the local files stay off the remote.</summary>
     public static readonly string[] ExcludedPaths = [".claude/", ".worktreeinclude"];
 
+    /// <summary>
+    /// Where a <see cref="LocalFiles"/> path lives in the checkout <paramref name="top"/>, with the
+    /// platform's separators, which neither git's checkout path nor the relative path has on Windows.
+    /// </summary>
+    public static string LocalPath(string top, string path) => Path.GetFullPath(Path.Combine(top, path));
+
     /// <param name="top">The checkout to write the local files in.</param>
     /// <param name="excludeFile">The repo's info/exclude, shared by its worktrees.</param>
     public void ApplyLocal(string top, string excludeFile)
     {
         foreach (var (path, content) in LocalFiles(name))
         {
-            var full = Path.Combine(top, path);
+            var full = LocalPath(top, path);
             if (!File.Exists(full))
             {
                 Report(path, "create");

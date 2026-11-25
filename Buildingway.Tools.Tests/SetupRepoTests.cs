@@ -311,6 +311,18 @@ public sealed class SetupRepoTests : IDisposable
             File.ReadAllLines(Exclude));
     }
 
+    // git rev-parse prints Windows paths with forward slashes
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LocalFilePathsUseThePlatformSeparators(bool topFromGit)
+    {
+        // revert-check: not revert-sensitive (fails only on Windows, where the separators differ; CI runs it there)
+        var top = topFromGit ? Checkout.Replace('\\', '/') : Checkout;
+
+        Assert.Equal(Path.Combine(Checkout, ".claude", "checks"), SetupRepo.LocalPath(top, ".claude/checks"));
+    }
+
     // One blank line before the added block, whatever the file ended in (null: no file yet)
     [Theory]
     [InlineData(".claude/worktrees/\n", ".claude/worktrees/\n\n")]
@@ -410,6 +422,21 @@ public sealed class SetupRepoTests : IDisposable
         Assert.StartsWith("✓ ruleset \"Protect Main\"\n", output.ToString().ReplaceLineEndings("\n"));
         Assert.Contains("→ .claude/checks: create\n", output.ToString().ReplaceLineEndings("\n"));
         Assert.Equal("", error.ToString());
+    }
+
+    [Fact]
+    public void TheReportedExcludeFileUsesThePlatformSeparators()
+    {
+        // revert-check: not revert-sensitive (fails only on Windows, where git prints forward slashes; CI runs it there)
+        using var repo = new PluginRepo("SayMyName", $"https://github.com/{Repo}");
+
+        SetupRepo.Run([], () => repo.Git, new FakeGitHub(SayMyName()), output, error);
+
+        const string prefix = "→ git-excluded local files: add .claude/, .worktreeinclude to ";
+        var line = output.ToString().ReplaceLineEndings("\n").Split('\n').Single(l => l.StartsWith(prefix, StringComparison.Ordinal));
+        var excludeFile = line[prefix.Length..];
+        Assert.Equal(Path.GetFullPath(excludeFile), excludeFile);
+        Assert.EndsWith(Path.Combine(".git", "info", "exclude"), excludeFile);
     }
 
     [Fact]
