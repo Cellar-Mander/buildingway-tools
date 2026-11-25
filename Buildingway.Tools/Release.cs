@@ -76,12 +76,12 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             .LastOrDefault();
     }
 
-    /// <summary>The PR number and title of a first-parent commit on main from its subject and body.</summary>
-    public static (string? Number, string Title) ParseMergeSubject(string subject, string body)
+    /// <summary>The PR number and title of a first-parent commit on main from its subject and body, which is read only for a merge commit.</summary>
+    public static (string? Number, string Title) ParseMergeSubject(string subject, Func<string> body)
     {
         if (MergeCommit().Match(subject) is { Success: true } merge)
         {
-            return (merge.Groups[1].Value, body.Split('\n')[0]);
+            return (merge.Groups[1].Value, body().Split('\n')[0]);
         }
         if (SquashCommit().Match(subject) is { Success: true } squash)
         {
@@ -97,6 +97,14 @@ internal sealed partial class Release(Git git, PluginProject plugin)
     private string MainVersion() =>
         PluginProject.VersionIn(git.Output("show", $"origin/main:{plugin.Csproj}"))
         ?? throw new ToolException($"No <Version> in {plugin.Csproj} on main.");
+
+    /// <summary>The latest stable tag on main, or null before the first stable release.</summary>
+    internal string? LastRelease()
+    {
+        // Test tags (v…-test1) are prereleases, not the last release
+        var (code, tag) = git.TryOutput("describe", "--tags", "--abbrev=0", "--match", "v*", "--exclude", "v*-*", "origin/main");
+        return code == 0 ? tag : null;
+    }
 
     private void Prepare(string version)
     {
@@ -122,8 +130,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         {
             throw new ToolException($"Tag {tag} already exists.");
         }
-        // Test tags (v…-test1) are prereleases, not the last release
-        var last = git.Output("describe", "--tags", "--abbrev=0", "--match", "v*", "--exclude", "v*-*", "origin/main");
+        var last = LastRelease();
 
         // A dated section for a <Version> never released as stable (only as testing builds, or not
         // at all) moves to the new version, as each testing build needs a higher version than the last
@@ -161,7 +168,8 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         Shell.Run("dotnet", "test", solution, "-c", "Release", "--nologo", "-v", "q");
 
         var changes = ChangesSince(last);
-        Console.WriteLine($"Changes since {last}:");
+        var changesHeading = ChangesHeading(last);
+        Console.WriteLine(changesHeading);
         Console.WriteLine(changes);
 
         var dated = reversion
@@ -174,7 +182,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
 
             Before merging, check that every user-facing change below has a CHANGELOG entry. ⚠ marks a change to plugin code that touched no CHANGELOG entry.
 
-            Changes since {last}:
+            {changesHeading}
             {changes}
             {(note is null ? "" : $"\n{note}\n")}
             After merging, publish it with `dotnet buildingway release publish {version} --testing` for a testing build, or `dotnet buildingway release publish {version}` for the stable release.
@@ -234,26 +242,33 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             : Path.Combine(home, ".xlcore", "dalamud", "Hooks", "dev");
     }
 
+    /// <summary>The heading over the changes list: since the last release, or the first commit if there is none.</summary>
+    internal static string ChangesHeading(string? last) => $"Changes since {last ?? "the first commit"}:";
+
     /// <summary>
     /// One line per change on main since last: number, title and a flag when it changed plugin
     /// code without touching the CHANGELOG.
     /// </summary>
-    private string ChangesSince(string last)
+    internal string ChangesSince(string? last)
     {
         var lines = new List<string>();
-        foreach (var entry in git.Output("log", "--first-parent", "--format=%H%x09%s", $"{last}..origin/main").Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var entry in git.Output("log", "--first-parent", "--format=%H%x09%s", last is null ? "origin/main" : $"{last}..origin/main").Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var (commit, subject) = (entry[..entry.IndexOf('\t')], entry[(entry.IndexOf('\t') + 1)..]);
-            var body = MergeCommit().IsMatch(subject) ? git.Output("log", "-1", "--format=%b", commit) : "";
-            var (number, title) = ParseMergeSubject(subject, body);
-            var codeChanged = !git.Succeeds(["diff", "--quiet", $"{commit}^", commit, "--", .. plugin.CodePaths]);
-            var flag = codeChanged && git.Succeeds("diff", "--quiet", $"{commit}^", commit, "--", "CHANGELOG.md")
+            var (number, title) = ParseMergeSubject(subject, () => git.Output("log", "-1", "--format=%b", commit));
+            var codeChanged = Changed(commit, plugin.CodePaths);
+            var flag = codeChanged && !Changed(commit, ["CHANGELOG.md"])
                 ? " ⚠ plugin code changed, no CHANGELOG entry"
                 : "";
             lines.Add($"- {(number is null ? "" : $"#{number} ")}{title}{flag}");
         }
         return string.Join('\n', lines);
     }
+
+    /// <summary>True when commit changed any of paths since its first parent, or added them if it has none.</summary>
+    private bool Changed(string commit, IEnumerable<string> paths) => git.HasRef($"{commit}^")
+        ? !git.Succeeds(["diff", "--quiet", $"{commit}^", commit, "--", .. paths])
+        : !git.Succeeds(["diff-tree", "--quiet", "-r", "--root", commit, "--", .. paths]);
 
     private void Publish(string version, bool testing)
     {

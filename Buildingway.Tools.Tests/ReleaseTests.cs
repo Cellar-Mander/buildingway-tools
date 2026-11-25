@@ -43,7 +43,7 @@ public class ReleaseTests
     [InlineData("Fix the thing (#42)", "", "42", "Fix the thing")]
     [InlineData("Direct commit", "", null, "Direct commit")]
     public void ParsesMergeSubjects(string subject, string body, string? number, string title) =>
-        Assert.Equal((number, title), Release.ParseMergeSubject(subject, body));
+        Assert.Equal((number, title), Release.ParseMergeSubject(subject, () => body));
 
     [Fact]
     public void ReadsRepoJsonFields()
@@ -176,4 +176,78 @@ public class ReleaseTests
     [Fact]
     public void JsonStringIsEmptyForNonObjects() =>
         Assert.Equal("", Release.JsonString(JsonDocument.Parse("[1]").RootElement, "x"));
+
+    [Fact]
+    public void LastReleaseIsNullBeforeTheFirstStableTag()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0-rc1");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Null(new Release(repo.Git, repo.Plugin).LastRelease());
+    }
+
+    [Fact]
+    public void LastReleaseIsTheLatestStableTagOnMain()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0");
+        repo.Commit("Second");
+        repo.Git.Output("tag", "v0.2.0.0-rc1");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("v0.1.0.0", new Release(repo.Git, repo.Plugin).LastRelease());
+    }
+
+    [Fact]
+    public void ChangesSinceNoReleaseListsEveryChangeFromTheFirstCommit()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        File.WriteAllText(Path.Combine(repo.Top, "CHANGELOG.md"), "# Changelog\n");
+        repo.Commit("Add a CHANGELOG");
+        File.WriteAllText(Path.Combine(repo.Top, "MyPlugin", "Plugin.cs"), "class Plugin;\n");
+        repo.Commit("Add the plugin");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("""
+            - Add the plugin ⚠ plugin code changed, no CHANGELOG entry
+            - Add a CHANGELOG
+            - Initial ⚠ plugin code changed, no CHANGELOG entry
+            """.ReplaceLineEndings("\n"), new Release(repo.Git, repo.Plugin).ChangesSince(null));
+    }
+
+    [Fact]
+    public void ChangesSinceAReleaseListsOnlyLaterChanges()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0");
+        File.WriteAllText(Path.Combine(repo.Top, "MyPlugin", "Plugin.cs"), "class Plugin;\n");
+        File.WriteAllText(Path.Combine(repo.Top, "CHANGELOG.md"), "# Changelog\n");
+        repo.Commit("Add the plugin");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("- Add the plugin", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
+    }
+
+    [Fact]
+    public void ChangesSinceDiffsAMergeAgainstMain()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0");
+        repo.Git.Output("switch", "-q", "-c", "feature");
+        File.WriteAllText(Path.Combine(repo.Top, "MyPlugin", "Plugin.cs"), "class Plugin;\n");
+        repo.Commit("Add the plugin");
+        repo.Git.Output("switch", "-q", "main");
+        repo.Git.Output("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false",
+            "merge", "-q", "--no-ff", "-m", "Merge pull request #5 from owner/feature", "-m", "Add the plugin window", "feature");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("- #5 Add the plugin window ⚠ plugin code changed, no CHANGELOG entry", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
+    }
+
+    [Theory]
+    [InlineData("v0.1.0.0", "Changes since v0.1.0.0:")]
+    [InlineData(null, "Changes since the first commit:")]
+    public void ChangesHeadingNamesTheLastReleaseOrTheFirstCommit(string? last, string expected) =>
+        Assert.Equal(expected, Release.ChangesHeading(last));
 }
