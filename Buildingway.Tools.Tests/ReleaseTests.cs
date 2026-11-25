@@ -176,4 +176,56 @@ public class ReleaseTests
     [Fact]
     public void JsonStringIsEmptyForNonObjects() =>
         Assert.Equal("", Release.JsonString(JsonDocument.Parse("[1]").RootElement, "x"));
+
+    [Fact]
+    public void LastReleaseIsNullBeforeTheFirstStableTag()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0-rc1");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Null(new Release(repo.Git, repo.Plugin).LastRelease());
+    }
+
+    [Fact]
+    public void LastReleaseIsTheLatestStableTagOnMain()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0");
+        repo.Commit("Second");
+        repo.Git.Output("tag", "v0.2.0.0-rc1");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("v0.1.0.0", new Release(repo.Git, repo.Plugin).LastRelease());
+    }
+
+    [Fact]
+    public void ChangesSinceNoReleaseListsEveryChangeFromTheFirstCommit()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        File.WriteAllText(Path.Combine(repo.Top, "CHANGELOG.md"), "# Changelog\n");
+        repo.Commit("Add a CHANGELOG");
+        File.WriteAllText(Path.Combine(repo.Top, "MyPlugin", "Plugin.cs"), "class Plugin;\n");
+        repo.Commit("Add the plugin");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("""
+            - Add the plugin ⚠ plugin code changed, no CHANGELOG entry
+            - Add a CHANGELOG
+            - Initial ⚠ plugin code changed, no CHANGELOG entry
+            """.ReplaceLineEndings("\n"), new Release(repo.Git, repo.Plugin).ChangesSince(null));
+    }
+
+    [Fact]
+    public void ChangesSinceAReleaseListsOnlyLaterChanges()
+    {
+        using var repo = new PluginRepo("MyPlugin");
+        repo.Git.Output("tag", "v0.1.0.0");
+        File.WriteAllText(Path.Combine(repo.Top, "MyPlugin", "Plugin.cs"), "class Plugin;\n");
+        File.WriteAllText(Path.Combine(repo.Top, "CHANGELOG.md"), "# Changelog\n");
+        repo.Commit("Add the plugin");
+        repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
+
+        Assert.Equal("- Add the plugin", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
+    }
 }

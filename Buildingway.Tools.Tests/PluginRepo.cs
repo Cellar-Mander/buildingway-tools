@@ -16,8 +16,14 @@ internal sealed class PluginRepo : IDisposable
             """);
         Git = new Git(Top);
         Git.Output("init", "-q", "-b", "main");
+        Commit("Initial");
+    }
+
+    /// <summary>Commits every change in the checkout.</summary>
+    public void Commit(string message)
+    {
         Git.Output("add", ".");
-        Git.Output("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "Initial");
+        Git.Output("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", message);
     }
 
     public string Top { get; }
