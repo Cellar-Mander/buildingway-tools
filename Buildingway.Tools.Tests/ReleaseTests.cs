@@ -93,6 +93,17 @@ public class ReleaseTests
         return stream.ToArray();
     }
 
+    [Theory]
+    [InlineData("""[{"IsTestingExclusive":true}]""", true)]
+    [InlineData("""[{"IsTestingExclusive":false}]""", false)]
+    [InlineData("""[{"IsTestingExclusive":"true"}]""", false)]
+    [InlineData("""[{"AssemblyVersion":"1.0.0.1"}]""", false)]
+    public void IsTestingExclusiveReadsTheBoolean(string json, bool expected) =>
+        Assert.Equal(expected, Release.IsTestingExclusive(Release.RepoEntry(Encoding.UTF8.GetBytes(json))));
+
+    [Fact]
+    public void IsTestingExclusiveIsFalseWithoutAnEntry() => Assert.False(Release.IsTestingExclusive(null));
+
     [Fact]
     public void JsonStringIsEmptyForNonObjects() =>
         Assert.Equal("", Release.JsonString(JsonDocument.Parse("[1]").RootElement, "x"));

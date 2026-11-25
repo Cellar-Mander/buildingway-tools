@@ -332,14 +332,18 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         string Field(string name) => entry is { } e ? JsonString(e, name) : "";
         if (testing)
         {
-            // Dalamud offers the testing build only above the stable version and at the game's API level
+            // Dalamud offers the testing build only at the game's API level, and above the stable version
+            // unless the entry is testing-only
             checks.Check("repo.json TestingAssemblyVersion", Field("TestingAssemblyVersion"), version);
             checks.Check("repo.json DownloadLinkTesting", Field("DownloadLinkTesting"), url);
             checks.Check("repo.json TestingDalamudApiLevel matches DalamudApiLevel", Field("TestingDalamudApiLevel"), Field("DalamudApiLevel"));
-            var stable = Field("AssemblyVersion");
-            // No stable version yet counts as below
-            var below = stable != version && (!IsVersion(stable) || CompareVersions(stable, version) < 0);
-            checks.Check($"repo.json AssemblyVersion ({stable}) is below {version}", below ? "yes" : "", "yes");
+            if (!IsTestingExclusive(entry))
+            {
+                var stable = Field("AssemblyVersion");
+                // No stable version yet counts as below
+                var below = stable != version && (!IsVersion(stable) || CompareVersions(stable, version) < 0);
+                checks.Check($"repo.json AssemblyVersion ({stable}) is below {version}", below ? "yes" : "", "yes");
+            }
             foreach (var link in new[] { "DownloadLinkInstall", "DownloadLinkUpdate" })
             {
                 checks.Check($"repo.json {link} doesn't point at {tag}", Field(link) != url ? "yes" : "", "yes");
@@ -388,6 +392,14 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             return null;
         }
     }
+
+    /// <summary>
+    /// Whether a repo.json entry is offered only to installs that receive testing versions, as before
+    /// the first stable release. Dalamud then uses the testing fields whatever AssemblyVersion says.
+    /// </summary>
+    public static bool IsTestingExclusive(JsonElement? entry) =>
+        entry is { ValueKind: JsonValueKind.Object } e && e.TryGetProperty("IsTestingExclusive", out var value)
+        && value.ValueKind == JsonValueKind.True;
 
     /// <summary>A string or number property as text, or "" when it's missing.</summary>
     public static string JsonString(JsonElement element, string name) =>
