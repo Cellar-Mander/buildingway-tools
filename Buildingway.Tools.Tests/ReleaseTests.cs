@@ -93,6 +93,86 @@ public class ReleaseTests
         return stream.ToArray();
     }
 
+    [Theory]
+    [InlineData("""[{"IsTestingExclusive":true}]""", true)]
+    [InlineData("""[{"IsTestingExclusive":false}]""", false)]
+    [InlineData("""[{"IsTestingExclusive":"true"}]""", false)]
+    [InlineData("""[{"AssemblyVersion":"1.0.0.1"}]""", false)]
+    public void IsTestingExclusiveReadsTheBoolean(string json, bool expected) =>
+        Assert.Equal(expected, Release.IsTestingExclusive(Release.RepoEntry(Encoding.UTF8.GetBytes(json))));
+
+    [Fact]
+    public void IsTestingExclusiveIsFalseWithoutAnEntry() => Assert.False(Release.IsTestingExclusive(null));
+
+    private const string RcUrl = "https://github.com/o/r/releases/download/v1.0.0.1-rc1/P.zip";
+
+    private static (bool Failed, string Output) CheckTestingEntry(string fields)
+    {
+        var json = $$"""[{"TestingAssemblyVersion":"1.0.0.1","DownloadLinkTesting":"{{RcUrl}}","TestingDalamudApiLevel":15,"DalamudApiLevel":15{{fields}}}]""";
+        var output = new StringWriter();
+        var checks = new Checks(output);
+        Release.CheckTestingEntry(checks, Release.RepoEntry(Encoding.UTF8.GetBytes(json)), "1.0.0.1", RcUrl, "v1.0.0.1-rc1");
+        return (checks.Failed, output.ToString().ReplaceLineEndings("\n"));
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData(""","AssemblyVersion":"1.0.0.0" """, false)]
+    [InlineData(""","AssemblyVersion":"1.0.0.0","DownloadLinkInstall":"https://x/v1.0.0.0/P.zip" """, false)]
+    [InlineData(""","AssemblyVersion":"1.0.0.2" """, true)]
+    [InlineData(""","AssemblyVersion":"1.0.0.01" """, true)]
+    [InlineData(""","AssemblyVersion":"1.0.0.1","IsTestingExclusive":true""", false)]
+    [InlineData(""","AssemblyVersion":"1.0.0.1","IsTestingExclusive":false""", true)]
+    [InlineData(""","DownloadLinkInstall":"https://github.com/o/r/releases/download/v1.0.0.1-rc1/P.zip" """, true)]
+    [InlineData(""","DownloadLinkUpdate":"https://github.com/o/r/releases/download/v1.0.0.1-rc1/P.zip" """, true)]
+    [InlineData(""","DalamudApiLevel":14""", true)]
+    public void TestingEntryNeedsTheStableVersionBelowUnlessTestingOnly(string fields, bool failed) =>
+        Assert.Equal(failed, CheckTestingEntry(fields).Failed);
+
+    [Theory]
+    [InlineData(""","TestingAssemblyVersion":"1.0.0.0" """)]
+    [InlineData(""","DownloadLinkTesting":"https://x/P.zip" """)]
+    public void TestingEntryNeedsItsTestingFieldsOnThisBuild(string fields)
+    {
+        // A JSON object's last duplicate key wins, so these replace the defaults
+        Assert.True(CheckTestingEntry(fields).Failed);
+    }
+
+    [Fact]
+    public void TestingEntryNamesEachCheck() =>
+        Assert.Equal(
+            """
+            ✓ repo.json TestingAssemblyVersion
+            ✓ repo.json DownloadLinkTesting
+            ✓ repo.json TestingDalamudApiLevel matches DalamudApiLevel
+            ✓ repo.json AssemblyVersion (1.0.0.0) is below 1.0.0.1
+            ✓ repo.json DownloadLinkInstall doesn't point at v1.0.0.1-rc1
+            ✓ repo.json DownloadLinkUpdate doesn't point at v1.0.0.1-rc1
+
+            """.ReplaceLineEndings("\n"),
+            CheckTestingEntry(""","AssemblyVersion":"1.0.0.0" """).Output);
+
+    [Fact]
+    public void TestingEntryShowsALinkThatPointsAtTheBuild() =>
+        Assert.Contains(
+            "✗ repo.json DownloadLinkInstall doesn't point at v1.0.0.1-rc1: expected yes, got nothing\n",
+            CheckTestingEntry($$""","DownloadLinkInstall":"{{RcUrl}}" """).Output);
+
+    [Fact]
+    public void TestingEntryFieldsAreMissingWithoutAnEntry()
+    {
+        var output = new StringWriter();
+        var checks = new Checks(output);
+        Release.CheckTestingEntry(checks, null, "1.0.0.1", RcUrl, "v1.0.0.1-rc1");
+        Assert.Contains("✗ repo.json TestingAssemblyVersion: expected 1.0.0.1, got nothing\n", output.ToString().ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void TestingEntryNamesTheStableVersionThatIsNotBelow() =>
+        Assert.Contains(
+            "✗ repo.json AssemblyVersion (1.0.0.1) is below 1.0.0.1: expected yes, got nothing\n",
+            CheckTestingEntry(""","AssemblyVersion":"1.0.0.1" """).Output);
+
     [Fact]
     public void JsonStringIsEmptyForNonObjects() =>
         Assert.Equal("", Release.JsonString(JsonDocument.Parse("[1]").RootElement, "x"));
