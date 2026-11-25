@@ -152,6 +152,9 @@ internal sealed class ReleaseRepo : IDisposable
 
     public string CsprojPath => Path.Combine(Top, Name, Name + ".csproj");
 
+    /// <summary>The csproj as Release passes it to dotnet: the checkout joined to the forward-slash relative path.</summary>
+    public string CsprojArgument => Path.Combine(Top, $"{Name}/{Name}.csproj");
+
     public string ChangelogPath => Path.Combine(Top, "CHANGELOG.md");
 
     public Release Release => new(Git, repo.Plugin, Host);
