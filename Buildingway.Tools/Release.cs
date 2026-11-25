@@ -76,12 +76,12 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             .LastOrDefault();
     }
 
-    /// <summary>The PR number and title of a first-parent commit on main from its subject and body.</summary>
-    public static (string? Number, string Title) ParseMergeSubject(string subject, string body)
+    /// <summary>The PR number and title of a first-parent commit on main from its subject and body, which is read only for a merge commit.</summary>
+    public static (string? Number, string Title) ParseMergeSubject(string subject, Func<string> body)
     {
         if (MergeCommit().Match(subject) is { Success: true } merge)
         {
-            return (merge.Groups[1].Value, body.Split('\n')[0]);
+            return (merge.Groups[1].Value, body().Split('\n')[0]);
         }
         if (SquashCommit().Match(subject) is { Success: true } squash)
         {
@@ -168,8 +168,8 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         Shell.Run("dotnet", "test", solution, "-c", "Release", "--nologo", "-v", "q");
 
         var changes = ChangesSince(last);
-        var since = last ?? "the first commit";
-        Console.WriteLine($"Changes since {since}:");
+        var changesHeading = ChangesHeading(last);
+        Console.WriteLine(changesHeading);
         Console.WriteLine(changes);
 
         var dated = reversion
@@ -182,7 +182,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
 
             Before merging, check that every user-facing change below has a CHANGELOG entry. ⚠ marks a change to plugin code that touched no CHANGELOG entry.
 
-            Changes since {since}:
+            {changesHeading}
             {changes}
             {(note is null ? "" : $"\n{note}\n")}
             After merging, publish it with `dotnet buildingway release publish {version} --testing` for a testing build, or `dotnet buildingway release publish {version}` for the stable release.
@@ -242,6 +242,9 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             : Path.Combine(home, ".xlcore", "dalamud", "Hooks", "dev");
     }
 
+    /// <summary>The heading over the changes list: since the last release, or the first commit if there is none.</summary>
+    internal static string ChangesHeading(string? last) => $"Changes since {last ?? "the first commit"}:";
+
     /// <summary>
     /// One line per change on main since last: number, title and a flag when it changed plugin
     /// code without touching the CHANGELOG.
@@ -252,8 +255,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         foreach (var entry in git.Output("log", "--first-parent", "--format=%H%x09%s", last is null ? "origin/main" : $"{last}..origin/main").Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var (commit, subject) = (entry[..entry.IndexOf('\t')], entry[(entry.IndexOf('\t') + 1)..]);
-            var body = MergeCommit().IsMatch(subject) ? git.Output("log", "-1", "--format=%b", commit) : "";
-            var (number, title) = ParseMergeSubject(subject, body);
+            var (number, title) = ParseMergeSubject(subject, () => git.Output("log", "-1", "--format=%b", commit));
             var codeChanged = Changed(commit, plugin.CodePaths);
             var flag = codeChanged && !Changed(commit, ["CHANGELOG.md"])
                 ? " ⚠ plugin code changed, no CHANGELOG entry"

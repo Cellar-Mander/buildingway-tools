@@ -43,7 +43,7 @@ public class ReleaseTests
     [InlineData("Fix the thing (#42)", "", "42", "Fix the thing")]
     [InlineData("Direct commit", "", null, "Direct commit")]
     public void ParsesMergeSubjects(string subject, string body, string? number, string title) =>
-        Assert.Equal((number, title), Release.ParseMergeSubject(subject, body));
+        Assert.Equal((number, title), Release.ParseMergeSubject(subject, () => body));
 
     [Fact]
     public void ReadsRepoJsonFields()
@@ -244,4 +244,10 @@ public class ReleaseTests
 
         Assert.Equal("- #5 Add the plugin window ⚠ plugin code changed, no CHANGELOG entry", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
     }
+
+    [Theory]
+    [InlineData("v0.1.0.0", "Changes since v0.1.0.0:")]
+    [InlineData(null, "Changes since the first commit:")]
+    public void ChangesHeadingNamesTheLastReleaseOrTheFirstCommit(string? last, string expected) =>
+        Assert.Equal(expected, Release.ChangesHeading(last));
 }
