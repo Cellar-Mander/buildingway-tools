@@ -332,22 +332,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         string Field(string name) => entry is { } e ? JsonString(e, name) : "";
         if (testing)
         {
-            // Dalamud offers the testing build only at the game's API level, and above the stable version
-            // unless the entry is testing-only
-            checks.Check("repo.json TestingAssemblyVersion", Field("TestingAssemblyVersion"), version);
-            checks.Check("repo.json DownloadLinkTesting", Field("DownloadLinkTesting"), url);
-            checks.Check("repo.json TestingDalamudApiLevel matches DalamudApiLevel", Field("TestingDalamudApiLevel"), Field("DalamudApiLevel"));
-            if (!IsTestingExclusive(entry))
-            {
-                var stable = Field("AssemblyVersion");
-                // No stable version yet counts as below
-                var below = stable != version && (!IsVersion(stable) || CompareVersions(stable, version) < 0);
-                checks.Check($"repo.json AssemblyVersion ({stable}) is below {version}", below ? "yes" : "", "yes");
-            }
-            foreach (var link in new[] { "DownloadLinkInstall", "DownloadLinkUpdate" })
-            {
-                checks.Check($"repo.json {link} doesn't point at {tag}", Field(link) != url ? "yes" : "", "yes");
-            }
+            CheckTestingEntry(checks, entry, version, url, tag);
         }
         else
         {
@@ -375,6 +360,28 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         return 1;
     }
 
+    /// <summary>The repo.json checks for a testing build: its fields point at it, and installs that receive testing versions get it.</summary>
+    internal static void CheckTestingEntry(Checks checks, JsonElement? entry, string version, string url, string tag)
+    {
+        string Field(string name) => entry is { } e ? JsonString(e, name) : "";
+        // Dalamud offers the testing build only at the game's API level, and above the stable version
+        // unless the entry is testing-only
+        checks.Check("repo.json TestingAssemblyVersion", Field("TestingAssemblyVersion"), version);
+        checks.Check("repo.json DownloadLinkTesting", Field("DownloadLinkTesting"), url);
+        checks.Check("repo.json TestingDalamudApiLevel matches DalamudApiLevel", Field("TestingDalamudApiLevel"), Field("DalamudApiLevel"));
+        if (!IsTestingExclusive(entry))
+        {
+            var stable = Field("AssemblyVersion");
+            // No stable version yet counts as below
+            var below = stable != version && (!IsVersion(stable) || CompareVersions(stable, version) < 0);
+            checks.Check($"repo.json AssemblyVersion ({stable}) is below {version}", below ? "yes" : "", "yes");
+        }
+        foreach (var link in new[] { "DownloadLinkInstall", "DownloadLinkUpdate" })
+        {
+            checks.Check($"repo.json {link} doesn't point at {tag}", Field(link) != url ? "yes" : "", "yes");
+        }
+    }
+
     /// <summary>The first entry of a repo.json array, or null when it isn't one.</summary>
     public static JsonElement? RepoEntry(byte[]? repoJson)
     {
@@ -388,6 +395,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             return root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0 ? root[0] : null;
         }
         catch (JsonException)
+        // Stryker disable once Block : with the block removed, Stryker's mutated method ends in return default, the same null
         {
             return null;
         }
