@@ -8,7 +8,7 @@ namespace Buildingway.Tools;
 /// Release steps that need no judgement. Buildingway-ci's release.yml does what happens once the
 /// release-prep PR is merged: tag, build, publish and the repo.json PR.
 /// </summary>
-internal sealed partial class Release(Git git, PluginProject plugin)
+internal sealed partial class Release(Git git, PluginProject plugin, ReleaseHost host)
 {
     private const string PinFile = ".github/dalamud.env";
 
@@ -36,10 +36,12 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         fails.
         """;
 
-    public static int Run(string[] args)
+    public static int Run(string[] args) => Run(args, Git.FromCurrentDirectory, ReleaseHost.Real());
+
+    public static int Run(string[] args, Func<Git> findGit, ReleaseHost host)
     {
-        var git = Git.FromCurrentDirectory();
-        var release = new Release(git, PluginProject.Find(git.Top));
+        var git = findGit();
+        var release = new Release(git, PluginProject.Find(git.Top), host);
         switch (args)
         {
             case ["prepare", var version]:
@@ -54,7 +56,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             case ["verify", var version]:
                 return release.Verify(version);
             default:
-                Console.Error.WriteLine(Usage);
+                host.Error.WriteLine(Usage);
                 return 2;
         }
     }
@@ -134,7 +136,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
 
         // A dated section for a <Version> never released as stable (only as testing builds, or not
         // at all) moves to the new version, as each testing build needs a higher version than the last
-        var heading = $"## {version} - {DateTime.Now:yyyy-MM-dd}";
+        var heading = $"## {version} - {host.Today():yyyy-MM-dd}";
         var mainChangelog = git.Output("show", "origin/main:CHANGELOG.md");
         var reversion = !git.HasRef($"refs/tags/v{current}") && Changelog.NextSectionIs(mainChangelog, current);
         if (!reversion && !Changelog.HasUnreleasedEntries(mainChangelog))
@@ -153,24 +155,24 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         var note = DalamudNote();
         if (note is not null)
         {
-            Console.Error.WriteLine(note);
+            host.Error.WriteLine(note);
         }
 
         // The release workflow refuses a tag that doesn't match the version DalamudPackager writes
         var solution = Solution();
-        Shell.Run("dotnet", "build", solution, "-c", "Release", "--nologo", "-v", "q");
+        host.Commands.Run("dotnet", "build", solution, "-c", "Release", "--nologo", "-v", "q");
         var manifest = Path.Combine(git.Top, plugin.Dir, "bin", "x64", "Release", plugin.Name, plugin.Name + ".json");
         var built = File.Exists(manifest) ? JsonString(JsonDocument.Parse(File.ReadAllText(manifest)).RootElement, "AssemblyVersion") : "";
         if (built != version)
         {
             throw new ToolException($"The built manifest says {built}, not {version}.");
         }
-        Shell.Run("dotnet", "test", solution, "-c", "Release", "--nologo", "-v", "q");
+        host.Commands.Run("dotnet", "test", solution, "-c", "Release", "--nologo", "-v", "q");
 
         var changes = ChangesSince(last);
         var changesHeading = ChangesHeading(last);
-        Console.WriteLine(changesHeading);
-        Console.WriteLine(changes);
+        host.Output.WriteLine(changesHeading);
+        host.Output.WriteLine(changes);
 
         var dated = reversion
             ? $"moves the CHANGELOG section of {current}, never released as stable, to {version} with the Unreleased entries"
@@ -187,7 +189,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             {(note is null ? "" : $"\n{note}\n")}
             After merging, publish it with `dotnet buildingway release publish {version} --testing` for a testing build, or `dotnet buildingway release publish {version}` for the stable release.
             """;
-        Shell.Run("gh", "pr", "create", "--base", "main", "--head", branch, "--title", $"Prepare {version}", "--body", body);
+        host.Commands.Run("gh", "pr", "create", "--base", "main", "--head", branch, "--title", $"Prepare {version}", "--body", body);
     }
 
     /// <summary>The checkout's one .slnx or .sln, else the plugin's csproj.</summary>
@@ -213,7 +215,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         {
             return null;
         }
-        var deps = Path.Combine(LocalDalamudDir(), "Dalamud.deps.json");
+        var deps = Path.Combine(host.DalamudDir, "Dalamud.deps.json");
         var local = File.Exists(deps) && DalamudDep().Match(File.ReadAllText(deps)) is { Success: true } m ? m.Groups[1].Value : null;
         if (local is null)
         {
@@ -225,7 +227,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
     }
 
     /// <summary>The Dalamud local builds use, as Dalamud.NET.Sdk finds it.</summary>
-    private static string LocalDalamudDir()
+    internal static string LocalDalamudDir()
     {
         var set = Environment.GetEnvironmentVariable("DALAMUD_HOME");
         if (!string.IsNullOrEmpty(set))
@@ -293,9 +295,9 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         }
 
         var channel = testing ? "testing" : "stable";
-        Shell.Run("gh", "workflow", "run", "release.yml", "-R", repo, "--ref", "main", "-f", $"channel={channel}");
-        Console.WriteLine($"Started the Release workflow for the {channel} channel. Its summary names the tag; follow it with:");
-        Console.WriteLine($"  gh run watch -R {repo} $(gh run list -R {repo} --workflow release.yml -L 1 --json databaseId --jq '.[].databaseId')");
+        host.Commands.Run("gh", "workflow", "run", "release.yml", "-R", repo, "--ref", "main", "-f", $"channel={channel}");
+        host.Output.WriteLine($"Started the Release workflow for the {channel} channel. Its summary names the tag; follow it with:");
+        host.Output.WriteLine($"  gh run watch -R {repo} $(gh run list -R {repo} --workflow release.yml -L 1 --json databaseId --jq '.[].databaseId')");
     }
 
     private int Verify(string given)
@@ -309,7 +311,7 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         var testing = given != version;
         var repo = plugin.Repo;
         var zipName = plugin.Name + ".zip";
-        var checks = new Checks(Console.Out);
+        var checks = new Checks(host.Output);
 
         git.Run("fetch", "-q", "--tags", "origin", "main");
 
@@ -323,11 +325,11 @@ internal sealed partial class Release(Git git, PluginProject plugin)
             checks.Check($"tag {tag}", "", "pushed to origin");
         }
 
-        var (code, release) = Shell.TryOutput("gh", "release", "view", tag, "-R", repo, "--json", "isPrerelease,isDraft,assets",
+        var (code, release) = host.Commands.TryOutput("gh", "release", "view", tag, "-R", repo, "--json", "isPrerelease,isDraft,assets",
             "--jq", """if .isDraft then "draft" else (if .isPrerelease then "prerelease " else "" end) + ([.assets[].name] | join(",")) end""");
         checks.Check($"GitHub release {tag}", code == 0 ? release : "", (testing ? "prerelease " : "") + zipName);
 
-        using var http = new HttpClient();
+        using var http = new HttpClient(host.Http());
         http.DefaultRequestHeaders.UserAgent.ParseAdd("buildingway-tools");
         var url = $"https://github.com/{repo}/releases/download/{tag}/{zipName}";
         var zip = Download(http, url);
@@ -367,10 +369,10 @@ internal sealed partial class Release(Git git, PluginProject plugin)
         {
             return 0;
         }
-        var (_, pr) = Shell.TryOutput("gh", "pr", "list", "-R", repo, "--head", "release/repo-json", "--state", "open", "--json", "url", "--jq", ".[].url");
+        var (_, pr) = host.Commands.TryOutput("gh", "pr", "list", "-R", repo, "--head", "release/repo-json", "--state", "open", "--json", "url", "--jq", ".[].url");
         if (pr.Length > 0)
         {
-            Console.WriteLine($"The repo.json PR isn't merged yet: {pr}");
+            host.Output.WriteLine($"The repo.json PR isn't merged yet: {pr}");
         }
         return 1;
     }
@@ -500,6 +502,14 @@ internal sealed partial class Release(Git git, PluginProject plugin)
 
     [GeneratedRegex("\"Dalamud/([^\"]*)\"")]
     private static partial Regex DalamudDep();
+}
+
+/// <summary>What release steps reach outside the checkout: dotnet and gh, HTTP, the console, the date and the local Dalamud.</summary>
+internal sealed record ReleaseHost(
+    ICommands Commands, Func<HttpMessageHandler> Http, TextWriter Output, TextWriter Error, Func<DateTime> Today, string DalamudDir)
+{
+    public static ReleaseHost Real() =>
+        new(ShellCommands.Instance, () => new HttpClientHandler(), Console.Out, Console.Error, () => DateTime.Now, Release.LocalDalamudDir());
 }
 
 /// <summary>Prints ✓ or ✗ per check and remembers whether any failed.</summary>

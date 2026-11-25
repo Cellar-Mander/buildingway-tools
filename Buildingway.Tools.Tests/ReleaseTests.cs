@@ -177,6 +177,13 @@ public class ReleaseTests
     public void JsonStringIsEmptyForNonObjects() =>
         Assert.Equal("", Release.JsonString(JsonDocument.Parse("[1]").RootElement, "x"));
 
+    [Theory]
+    [InlineData("true")]
+    [InlineData("null")]
+    [InlineData("""{"a":1}""")]
+    public void JsonStringIsEmptyForValuesThatAreNotStringsOrNumbers(string value) =>
+        Assert.Equal("", Release.JsonString(JsonDocument.Parse($$"""{"x":{{value}}}""").RootElement, "x"));
+
     [Fact]
     public void LastReleaseIsNullBeforeTheFirstStableTag()
     {
@@ -184,7 +191,7 @@ public class ReleaseTests
         repo.Git.Output("tag", "v0.1.0.0-rc1");
         repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
 
-        Assert.Null(new Release(repo.Git, repo.Plugin).LastRelease());
+        Assert.Null(new Release(repo.Git, repo.Plugin, ReleaseRepo.Offline).LastRelease());
     }
 
     [Fact]
@@ -196,7 +203,7 @@ public class ReleaseTests
         repo.Git.Output("tag", "v0.2.0.0-rc1");
         repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
 
-        Assert.Equal("v0.1.0.0", new Release(repo.Git, repo.Plugin).LastRelease());
+        Assert.Equal("v0.1.0.0", new Release(repo.Git, repo.Plugin, ReleaseRepo.Offline).LastRelease());
     }
 
     [Fact]
@@ -213,7 +220,7 @@ public class ReleaseTests
             - Add the plugin ⚠ plugin code changed, no CHANGELOG entry
             - Add a CHANGELOG
             - Initial ⚠ plugin code changed, no CHANGELOG entry
-            """.ReplaceLineEndings("\n"), new Release(repo.Git, repo.Plugin).ChangesSince(null));
+            """.ReplaceLineEndings("\n"), new Release(repo.Git, repo.Plugin, ReleaseRepo.Offline).ChangesSince(null));
     }
 
     [Fact]
@@ -226,7 +233,7 @@ public class ReleaseTests
         repo.Commit("Add the plugin");
         repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
 
-        Assert.Equal("- Add the plugin", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
+        Assert.Equal("- Add the plugin", new Release(repo.Git, repo.Plugin, ReleaseRepo.Offline).ChangesSince("v0.1.0.0"));
     }
 
     [Fact]
@@ -242,7 +249,7 @@ public class ReleaseTests
             "merge", "-q", "--no-ff", "-m", "Merge pull request #5 from owner/feature", "-m", "Add the plugin window", "feature");
         repo.Git.Output("update-ref", "refs/remotes/origin/main", "HEAD");
 
-        Assert.Equal("- #5 Add the plugin window ⚠ plugin code changed, no CHANGELOG entry", new Release(repo.Git, repo.Plugin).ChangesSince("v0.1.0.0"));
+        Assert.Equal("- #5 Add the plugin window ⚠ plugin code changed, no CHANGELOG entry", new Release(repo.Git, repo.Plugin, ReleaseRepo.Offline).ChangesSince("v0.1.0.0"));
     }
 
     [Theory]

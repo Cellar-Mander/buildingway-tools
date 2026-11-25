@@ -100,3 +100,22 @@ internal sealed class Git(string top)
 
     public bool IsDirty() => Output("status", "--porcelain").Length > 0;
 }
+
+/// <summary>The commands a tool runs besides git, so tests can stand in for dotnet and gh.</summary>
+internal interface ICommands
+{
+    /// <summary>Runs a command with the console's output, failing when it exits non-zero.</summary>
+    void Run(string file, params string[] args);
+
+    /// <summary>Runs a command and returns its exit code and trimmed output.</summary>
+    (int Code, string Output) TryOutput(string file, params string[] args);
+}
+
+internal sealed class ShellCommands : ICommands
+{
+    public static readonly ShellCommands Instance = new();
+
+    public void Run(string file, params string[] args) => Shell.Run(file, args);
+
+    public (int Code, string Output) TryOutput(string file, params string[] args) => Shell.TryOutput(file, args);
+}
