@@ -40,7 +40,7 @@ public sealed class ReleasePrepareTests : IDisposable
         Assert.Equal("", repo.Git.Output("status", "--porcelain", "--untracked-files=no"));
         Assert.False(repo.OriginHas("refs/tags/v0.2.0.0"));
 
-        var csproj = repo.CsprojArgument;
+        var csproj = repo.CsprojPath;
         Assert.Equal(
             [
                 ["dotnet", "build", csproj, "-c", "Release", "--nologo", "-v", "q"],
@@ -229,7 +229,7 @@ public sealed class ReleasePrepareTests : IDisposable
 
         repo.Run("prepare", "0.2.0.0");
 
-        Assert.Equal(repo.CsprojArgument, repo.Commands.Single("dotnet build")[2]);
+        Assert.Equal(repo.CsprojPath, repo.Commands.Single("dotnet build")[2]);
     }
 
     [Fact]
