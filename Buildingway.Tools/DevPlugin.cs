@@ -33,22 +33,21 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
         return Path.Combine(root, "devPlugins", pluginName);
     }
 
-    public static int Run(string[] args)
-    {
-        var git = Git.FromCurrentDirectory();
-        var plugin = PluginProject.Find(git.Top);
-        return Run(args, git, plugin, DefaultDevDir(plugin), Build, Console.Out, Console.Error);
-    }
+    public static int Run(string[] args) =>
+        Run(args, Git.FromCurrentDirectory, ShellCommands.Instance, DefaultDevDir, Console.Out, Console.Error);
 
-    /// <param name="build">Builds the plugin and returns its output folder.</param>
-    public static int Run(string[] args, Git git, PluginProject plugin, string devDir, Func<PluginProject, string> build, TextWriter output, TextWriter error)
+    /// <param name="commands">Runs dotnet to build the plugin.</param>
+    /// <param name="findDevDir">The plugin's dev folder.</param>
+    public static int Run(string[] args, Func<Git> findGit, ICommands commands, Func<PluginProject, string> findDevDir, TextWriter output, TextWriter error)
     {
-        var dev = new DevPlugin(devDir, git.Top, output, error);
+        var git = findGit();
+        var plugin = PluginProject.Find(git.Top);
+        var dev = new DevPlugin(findDevDir(plugin), git.Top, output, error);
         switch (args)
         {
             case ["deploy"]:
             case ["deploy", _]:
-                var built = build(plugin);
+                var built = Build(plugin, commands);
                 return dev.Deploy(built, plugin.Name, ClaimDetails(git, args.ElementAtOrDefault(1) ?? "", DateTimeOffset.Now));
             case ["status"]:
                 dev.Status();
@@ -72,10 +71,10 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
     public string DevDir => devDir;
 
     /// <summary>Builds the plugin and returns its output folder.</summary>
-    private static string Build(PluginProject plugin)
+    private static string Build(PluginProject plugin, ICommands commands)
     {
         var (args, output) = BuildCommand(plugin);
-        Shell.Run("dotnet", args);
+        commands.Run("dotnet", args);
         return output;
     }
 
