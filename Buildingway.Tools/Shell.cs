@@ -79,7 +79,8 @@ internal static class Shell
 /// <summary>Git commands run in one checkout.</summary>
 internal sealed class Git(string top)
 {
-    public string Top { get; } = top;
+    /// <summary>The checkout's full path, with the platform's separators (git prints C:/... on Windows).</summary>
+    public string Top { get; } = Path.GetFullPath(top);
 
     public static Git FromCurrentDirectory()
     {
