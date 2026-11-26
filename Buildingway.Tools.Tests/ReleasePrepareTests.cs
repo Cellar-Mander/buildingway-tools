@@ -220,6 +220,16 @@ public sealed class ReleasePrepareTests : IDisposable
         Assert.Equal(solution, repo.Commands.Single("dotnet test")[2]);
     }
 
+    // git rev-parse prints Windows paths with forward slashes
+    [Fact]
+    public void PrepareGivesDotnetThePlatformSeparatorsFromAForwardSlashCheckout()
+    {
+        // revert-check: not revert-sensitive (fails only on Windows, where the separators differ; CI runs it there)
+        Assert.Equal(0, Release.Run(["prepare", "0.2.0.0"], () => new Git(repo.Top.Replace('\\', '/')), repo.Host));
+
+        Assert.Equal(repo.CsprojPath, repo.Commands.Single("dotnet build")[2]);
+    }
+
     [Fact]
     public void PrepareBuildsTheCsprojWhenThereIsMoreThanOneSolution()
     {

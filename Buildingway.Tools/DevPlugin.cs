@@ -102,7 +102,7 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
     public int Deploy(string buildOutput, string pluginName, string details)
     {
         Directory.CreateDirectory(devDir);
-        if (!TryCreateClaim() && ClaimOwner() != checkout)
+        if (!TryCreateClaim() && !ClaimedHere())
         {
             error.WriteLine("Refusing to deploy: another checkout is testing in the dev folder.");
             PrintClaim(error);
@@ -157,7 +157,7 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
             output.WriteLine("Already unclaimed.");
             return 0;
         }
-        if (ClaimOwner() != checkout && !force)
+        if (!ClaimedHere() && !force)
         {
             error.WriteLine("Refusing to release: the claim belongs to another checkout.");
             PrintClaim(error);
@@ -198,6 +198,9 @@ internal sealed class DevPlugin(string devDir, string checkout, TextWriter outpu
     [DllImport("kernel32", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CreateDirectoryWin32(string path, IntPtr securityAttributes = default);
+
+    /// <summary>True when the claim's checkout is this one, whichever separators either was written with.</summary>
+    private bool ClaimedHere() => ClaimOwner() is { Length: > 0 } owner && Path.GetFullPath(owner) == Path.GetFullPath(checkout);
 
     private string ClaimOwner()
     {

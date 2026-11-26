@@ -92,6 +92,17 @@ public sealed class DevPluginTests : IDisposable
         Assert.Equal(exitCode, From("/repo/a").Deploy(Build, "MyPlugin", Details));
     }
 
+    // Claims written before the checkout had the platform's separators hold git's C:/... form
+    [Fact]
+    public void AClaimWithGitsForwardSlashesBelongsToTheSameCheckout()
+    {
+        // revert-check: not revert-sensitive (fails only on Windows, where git prints forward slashes; CI runs it there)
+        Directory.CreateDirectory(Path.GetDirectoryName(Info)!);
+        File.WriteAllText(Info, $"checkout={root.Replace('\\', '/')}\n");
+
+        Assert.Equal(0, From(root).Release(force: false));
+    }
+
     [Fact]
     public void TheHolderRedeploysAndReleases()
     {
@@ -254,6 +265,20 @@ public sealed class DevPluginTests : IDisposable
         Assert.Equal(
             ["build", Path.Combine(repo.Top, "MyPlugin", "MyPlugin.csproj"), "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q"],
             args);
+        Assert.Equal(Path.Combine(repo.Top, "MyPlugin", "bin", "x64", "Debug"), output);
+    }
+
+    // git rev-parse prints Windows paths with forward slashes
+    [Fact]
+    public void BuildGetsThePlatformSeparatorsFromAForwardSlashCheckout()
+    {
+        // revert-check: not revert-sensitive (fails only on Windows, where the separators differ; CI runs it there)
+        using var repo = new PluginRepo("MyPlugin");
+        var git = new Git(repo.Top.Replace('\\', '/'));
+
+        var (args, output) = DevPlugin.BuildCommand(PluginProject.Find(git.Top));
+
+        Assert.Equal(Path.Combine(repo.Top, "MyPlugin", "MyPlugin.csproj"), args[1]);
         Assert.Equal(Path.Combine(repo.Top, "MyPlugin", "bin", "x64", "Debug"), output);
     }
 
