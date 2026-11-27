@@ -9,6 +9,8 @@
     mutant-triage rerun FILE[:LINE]                     run one file's mutants (mutation_rerun=)
     mutant-triage record KEY... OUTCOME [--note TEXT]   killed, suppressed, follow-up or spec
     mutant-triage summary BEFORE AFTER                  every survivor's outcome, as Markdown
+    mutant-triage redundant [REPORT] [--rows] [--test TEXT]  tests that kill no mutant, kill only mutants
+                                                        another test kills too, or the same set as another
     mutant-triage tests --revert JSON [REPORT]          which new and changed tests kill mutants on the
                                                         branch's changed lines, joined with `revert-check
                                                         --json JSON`; never starts a mutation run
@@ -51,6 +53,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 
 DEFAULT_REPORTS = ["**/StrykerOutput/*/reports/mutation-report.json", "reports/mutation/mutation.json",
@@ -596,7 +599,8 @@ def cmd_rerun(a, root, cfg):
     print(f"{path}: {name}" + (f" line {line}" if line else ""))
     for m in mine:
         if m.status != "CompileError":
-            print(f"  {m.key}  {m.where}  {m.status}  {describe(m)}" + (f"  ({m.reason})" if m.reason else ""))
+            print(f"  {m.key}  {m.where}  {m.status}  {describe(m)}" + (f"  ({m.reason})" if m.reason else "")
+                  + (f"  killed by {', '.join(sorted(map(short_test, m.killed_by)))}" if m.killed_by else ""))
     return 0
 
 
@@ -817,6 +821,111 @@ def cmd_tests(a, root, cfg):
     return 0
 
 
+def report_tests(path):
+    """Every test a Stryker report lists (its testFiles), or None when it lists none (cosmic-ray, older reports)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            report = json.load(f)
+        test_files = report.get("testFiles") or {}
+    except (ValueError, AttributeError):  # cosmic-ray dumps: JSON lines, or an empty list
+        return None
+    names = [t.get("name", t["id"]) for tf in test_files.values() for t in tf.get("tests", [])]
+    return names or None
+
+
+def cmd_redundant(a, root, cfg):
+    path = resolve(a.report, root, cfg)
+    mutants, _, _ = load(path, root)
+    statuses = Counter(m.status for m in mutants.values())
+    unit = (lambda name: name) if a.rows else (lambda name: name.split("(")[0].strip())
+    caught = [m for m in mutants.values() if m.status in CAUGHT and m.killed_by]
+    kills, covers = {}, {}
+    for m in caught:
+        for t in m.killed_by:
+            kills.setdefault(unit(t), set()).add(m.key)
+    for m in mutants.values():
+        for t in m.covered_by:
+            covers.setdefault(unit(t), set()).add(m.key)
+    listed = report_tests(path)
+    known = set(kills) | set(covers) | {unit(t) for t in listed or []}
+    killers = {}  # mutant -> the units that kill it
+    for t, ks in kills.items():
+        for k in ks:
+            killers.setdefault(k, set()).add(t)
+
+    def short(t):  # Class.Method, keeping a data row's arguments
+        head, sep, args = t.partition("(")
+        return ".".join(head.split(".")[-2:]) + sep + args
+
+    shorts = {}
+    for t in known:
+        shorts.setdefault(short(t), []).append(t)
+
+    def shown(t):
+        return short(t) if len(shorts[short(t)]) == 1 else t  # pragma: no mutate: a name's list is never empty, so == 1 and <= 1 agree (ReplaceComparisonOperator_Eq_LtE)
+
+    def wanted(t):
+        return not a.test or a.test in t
+
+    what = "test row(s)" if a.rows else "test method(s)"
+    print(f"mutant-triage redundant: {len(known)} {what} and {len(caught)} mutant(s) killed by a named test, "
+          f"from {path}.")
+    skipped = sum(m.out_of_scope() for m in mutants.values())
+    if skipped:
+        print(f"This run left {skipped} mutant(s) out (a --mutate or --since run): a test that kills nothing here may "
+              "kill those. Judge redundancy on a full run.")
+
+    zero = sorted((t for t in known if t not in kills and wanted(t)), key=shown)
+    print(f"\nKill no mutant ({len(zero)}):")
+    for t in zero:
+        if t in covers:
+            note = f"reaches {len(covers[t])}"
+        elif covers or statuses["NoCoverage"]:
+            note = "reaches none"
+        else:
+            note = "this report doesn't record coverage"
+        print(f"  {shown(t)}  ({note})")
+
+    groups = {}
+    for t, ks in kills.items():
+        groups.setdefault(frozenset(ks), []).append(t)
+    shared_sets = [(ks, sorted(ts, key=shown)) for ks, ts in groups.items()
+                   if len(ts) > 1]  # pragma: no mutate: a group is never empty, so > 1 and != 1 agree (ReplaceComparisonOperator_Gt_NotEq)
+    same = sorted(((ks, ts) for ks, ts in shared_sets if any(map(wanted, ts))), key=lambda g: shown(g[1][0]))
+    print(f"\nKill exactly the same mutants as another test ({len(same)} group(s)):")
+    for ks, ts in same:
+        print(f"  {len(ks)} mutant(s): " + ", ".join(shown(t) for t in ts))
+
+    in_group = {t for _, ts in same for t in ts}
+    def also_killed(k):
+        return len(killers[k]) > 1  # pragma: no mutate: every mutant in kills has a killer, so > 1 and != 1 agree (ReplaceComparisonOperator_Gt_NotEq)
+
+    shared = sorted((t for t, ks in kills.items() if t not in in_group and wanted(t) and all(map(also_killed, ks))),
+                    key=shown)
+    print(f"\nKill nothing that no other test kills ({len(shared)}):")
+    for t in shared:
+        over = sorted((o for o, ks in kills.items() if kills[t] < ks), key=shown)
+        print(f"  {shown(t)}  kills {len(kills[t])}" + (", all also killed by " + ", ".join(map(shown, over)) if over
+                                                          else ", each also killed by some other test"))
+    if same or shared:
+        print("  Dropping two of these together can lose a mutant both kill: drop or merge one, then rerun.")
+
+    single = all(len(m.killed_by) == 1 for m in caught)  # pragma: no mutate: a caught mutant names a killer, so == 1 and <= 1 agree (ReplaceComparisonOperator_Eq_LtE)
+    if single and len(caught) > 1:
+        print("\nEvery killed mutant names exactly one killing test: the run probably stopped at the first failure "
+              "(cosmic-ray with unittest -f, Stryker JS without --disableBail), so 'nothing unique' and 'same "
+              "mutants' can't be told from this report.")
+    compile_errors = statuses["CompileError"]
+    unnamed = sum(m.status in CAUGHT + ("RuntimeError",) and not m.killed_by for m in mutants.values())
+    if compile_errors or unnamed:
+        print(f"\n{compile_errors} mutant(s) didn't compile and {unnamed} were killed with no test named (timeout, "
+              "runtime error): no test is credited with those, so a test with no kills may still catch them.")
+    if listed is None and not covers:
+        print("\nThe report lists no tests and no coverage: only tests that kill something are known, so 'kill no "
+              "mutant' is empty.")
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -843,12 +952,17 @@ def main(argv=None):
     s = sub.add_parser("tests", help="which new and changed tests kill mutants on the changed lines")
     s.add_argument("report", nargs="?")
     s.add_argument("--revert", required=True, metavar="JSON", help="the file `revert-check --json` wrote")
+    s = sub.add_parser("redundant", help="tests that kill no mutant, or nothing another test doesn't")
+    s.add_argument("report", nargs="?")
+    s.add_argument("--rows", action="store_true", help="keep a theory's data rows apart instead of per method")
+    s.add_argument("--test", metavar="TEXT", help="only report tests whose name contains TEXT")
     a = p.parse_args(argv)
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # quiet when piped into head
     root = repo_root()
     cfg = config(root)
     return {"list": cmd_list, "diff": cmd_diff, "summary": cmd_summary, "run": cmd_run, "snapshot": cmd_snapshot,
-            "rerun": cmd_rerun, "record": cmd_record, "tests": cmd_tests}[a.cmd](a, root, cfg)
+            "rerun": cmd_rerun, "record": cmd_record, "tests": cmd_tests,
+            "redundant": cmd_redundant}[a.cmd](a, root, cfg)
 
 
 if __name__ == "__main__":  # pragma: no mutate: run as a script, or imported by the tests as mutant_triage, which sorts after __main__ (<=)
