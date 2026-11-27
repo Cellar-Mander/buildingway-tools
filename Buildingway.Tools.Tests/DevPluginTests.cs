@@ -14,6 +14,7 @@ public sealed class DevPluginTests : IDisposable
         File.WriteAllText(Path.Combine(Build, "MyPlugin.dll"), "plugin");
         File.WriteAllText(Path.Combine(Build, "MyPlugin.json"), "{}");
         File.WriteAllText(Path.Combine(Build, "images", "icon.png"), "icon");
+        dotnet.From = Build;
     }
 
     public void Dispose() => Directory.Delete(root, recursive: true);
@@ -92,6 +93,17 @@ public sealed class DevPluginTests : IDisposable
         Assert.Equal(exitCode, From("/repo/a").Deploy(Build, "MyPlugin", Details));
     }
 
+    // Claims written before the checkout had the platform's separators hold git's C:/... form
+    [Fact]
+    public void AClaimWithGitsForwardSlashesBelongsToTheSameCheckout()
+    {
+        // revert-check: not revert-sensitive (fails only on Windows, where git prints forward slashes; CI runs it there)
+        Directory.CreateDirectory(Path.GetDirectoryName(Info)!);
+        File.WriteAllText(Info, $"checkout={root.Replace('\\', '/')}\n");
+
+        Assert.Equal(0, From(root).Release(force: false));
+    }
+
     [Fact]
     public void TheHolderRedeploysAndReleases()
     {
@@ -142,10 +154,42 @@ public sealed class DevPluginTests : IDisposable
         Assert.Equal($"Unclaimed: {DevDir}\nAlready unclaimed.\n", output.ToString().ReplaceLineEndings("\n"));
     }
 
-    private int Run(PluginRepo repo, params string[] args) =>
-        DevPlugin.Run(args, repo.Git, repo.Plugin, DevDir, plugin => { built.Add(plugin.Name); return Build; }, output, error);
+    private int Run(PluginRepo repo, params string[] args)
+    {
+        dotnet.Output = DevPlugin.BuildCommand(repo.Plugin).Output;
+        return DevPlugin.Run(args, () => repo.Git, dotnet, _ => DevDir, output, error);
+    }
 
-    private readonly List<string> built = [];
+    private readonly FakeDotnet dotnet = new();
+
+    /// <summary>Records each dotnet command; a build fills the output folder from <see cref="From"/>, or fails.</summary>
+    private sealed class FakeDotnet : ICommands
+    {
+        public List<string[]> Ran { get; } = [];
+
+        public string From { get; set; } = "";
+
+        public string Output { get; set; } = "";
+
+        public bool Fails { get; set; }
+
+        public void Run(string file, params string[] args)
+        {
+            Ran.Add([file, .. args]);
+            if (Fails)
+            {
+                throw new InvalidOperationException("dotnet build failed");
+            }
+            Directory.CreateDirectory(Path.Combine(Output, "images"));
+            foreach (var source in Directory.EnumerateFiles(From, "*", SearchOption.AllDirectories))
+            {
+                File.Copy(source, Path.Combine(Output, Path.GetRelativePath(From, source)));
+            }
+        }
+
+        public (int Code, string Output) TryOutput(string file, params string[] args) =>
+            throw new InvalidOperationException($"Unexpected command: {file} {string.Join(' ', args)}");
+    }
 
     [Theory]
     [InlineData]
@@ -161,7 +205,7 @@ public sealed class DevPluginTests : IDisposable
 
         Assert.Equal(2, Run(repo, args));
 
-        Assert.Empty(built);
+        Assert.Empty(dotnet.Ran);
         Assert.False(Directory.Exists(DevDir));
         Assert.Equal("", output.ToString());
         Assert.Equal(
@@ -183,16 +227,33 @@ public sealed class DevPluginTests : IDisposable
     {
         // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
         using var repo = new PluginRepo("MyPlugin");
+        // As a plugin repo does, so the build output doesn't count as an uncommitted change
+        File.WriteAllText(Path.Combine(repo.Top, ".gitignore"), "bin/\n");
+        repo.Commit("Ignore build output");
         var commit = repo.Git.Output("rev-parse", "--short", "HEAD");
 
         Assert.Equal(0, task is null ? Run(repo, "deploy") : Run(repo, "deploy", task));
 
-        Assert.Equal(["MyPlugin"], built);
+        Assert.Equal([["dotnet", .. DevPlugin.BuildCommand(repo.Plugin).Args]], dotnet.Ran);
         Assert.Equal("plugin", File.ReadAllText(Path.Combine(DevDir, "MyPlugin.dll")));
+        Assert.Equal("icon", File.ReadAllText(Path.Combine(DevDir, "images", "icon.png")));
         var info = File.ReadAllLines(Info);
         Assert.Equal([$"checkout={repo.Top}", "branch=main", $"commit={commit}", $"task={task}"], info[..4]);
         Assert.Matches(@"^deployed=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$", info[4]);
         Assert.Equal(5, info.Length);
+    }
+
+    [Fact]
+    public void AFailedBuildClaimsNothing()
+    {
+        // revert-check: not revert-sensitive (pins existing behaviour; the product change only adds the seams it calls)
+        using var repo = new PluginRepo("MyPlugin");
+        dotnet.Fails = true;
+
+        Assert.Throws<InvalidOperationException>(() => Run(repo, "deploy"));
+
+        Assert.Single(dotnet.Ran);
+        Assert.False(Directory.Exists(DevDir));
     }
 
     [Fact]
@@ -254,6 +315,20 @@ public sealed class DevPluginTests : IDisposable
         Assert.Equal(
             ["build", Path.Combine(repo.Top, "MyPlugin", "MyPlugin.csproj"), "-c", "Debug", "-p:Platform=x64", "--nologo", "-v", "q"],
             args);
+        Assert.Equal(Path.Combine(repo.Top, "MyPlugin", "bin", "x64", "Debug"), output);
+    }
+
+    // git rev-parse prints Windows paths with forward slashes
+    [Fact]
+    public void BuildGetsThePlatformSeparatorsFromAForwardSlashCheckout()
+    {
+        // revert-check: not revert-sensitive (fails only on Windows, where the separators differ; CI runs it there)
+        using var repo = new PluginRepo("MyPlugin");
+        var git = new Git(repo.Top.Replace('\\', '/'));
+
+        var (args, output) = DevPlugin.BuildCommand(PluginProject.Find(git.Top));
+
+        Assert.Equal(Path.Combine(repo.Top, "MyPlugin", "MyPlugin.csproj"), args[1]);
         Assert.Equal(Path.Combine(repo.Top, "MyPlugin", "bin", "x64", "Debug"), output);
     }
 
